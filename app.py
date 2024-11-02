@@ -821,11 +821,11 @@ class ECLVisualizer:
         return fig
 
 class ECLDashboard:
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, app: dash.Dash):
         self.df = df
+        self.app = app
         self.visualizer = ECLVisualizer()
         self.hypothesis_tester = HypothesisTester()
-        self.app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
         self.setup_layout()
         self.setup_callbacks()
 
@@ -1111,11 +1111,12 @@ class ECLDashboard:
             if 'investment' in bank_types:
                 type_masks.append(df['lnci'] / df['lnlsgr'] > 0.5)
             
-            combined_mask = type_masks[0]
-            for mask in type_masks[1:]:
-                combined_mask = combined_mask | mask
-            
-            df = df[combined_mask]
+            if type_masks:
+                combined_mask = type_masks[0]
+                for mask in type_masks[1:]:
+                    combined_mask = combined_mask | mask
+                
+                df = df[combined_mask]
         
         return df
 
@@ -1203,13 +1204,10 @@ class ECLDashboard:
         
         return df[columns]
 
-    def main(self):
-        self.app.run_server(debug=False)
-
-def main():
+def get_data():
     # Initialize data extraction and processing
     processor = ECLDataProcessor()
-    
+
     # Define specific banks to analyze
     bank_list = [
         {"cert": "3511", "name": "Wells Fargo Bank, National Association", "abbreviated_name": "Wells Fargo"},
@@ -1232,10 +1230,10 @@ def main():
         {"cert": "27314", "name": "Synchrony Bank", "abbreviated_name": "Synchrony Bank"},
         {"cert": "29950", "name": "Santander Bank, N.A.", "abbreviated_name": "Santander Bank"}
     ]
-    
+
     start_date = '20080101'
     end_date = '20240630'
-    
+
     # Process data for each bank
     all_data = []
     for bank in bank_list:
@@ -1251,7 +1249,7 @@ def main():
             ),
             "limit": 10000
         }
-        
+
         try:
             response = requests.get(
                 f"{BASE_URL}/financials", 
@@ -1261,7 +1259,7 @@ def main():
             )
             response.raise_for_status()
             data = response.json()
-            
+
             if 'data' in data:
                 bank_data = [
                     {**item['data'], 'bank': bank['name'], 'abbreviated_name': bank['abbreviated_name']} 
@@ -1271,22 +1269,40 @@ def main():
                 all_data.extend(bank_data)
         except Exception as e:
             continue
-    
+
     if not all_data:
-        return
-    
+        print("No data retrieved.")
+        return pd.DataFrame()
+
     df = processor.process_raw_data(all_data)
-    
+
     if df.empty:
-        return
-    
+        print("Dataframe is empty.")
+        return pd.DataFrame()
+
     df = processor.calculate_ecl_metrics(df)
     df = processor.calculate_stress_period_changes(df)
     df = processor.calculate_predicted_ecl_and_error(df)
-    
-    dashboard = ECLDashboard(df)
-    dashboard.main()
+
+    return df
+
+warnings.filterwarnings('ignore', message='.*Unverified HTTPS.*')
+
+# Initialize data extraction and processing
+processor = ECLDataProcessor()
+
+# Get processed data
+df = get_data()
+
+# Create Dash app
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+server = app.server
+
+# Initialize dashboard
+if not df.empty:
+    dashboard = ECLDashboard(df, app)
+else:
+    print("Dataframe is empty. The dashboard will not be initialized.")
 
 if __name__ == "__main__":
-    warnings.filterwarnings('ignore', message='.*Unverified HTTPS.*')
-    main()
+    app.run_server(debug=False)
