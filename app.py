@@ -2,7 +2,7 @@ import warnings
 import requests
 import pandas as pd
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
@@ -10,11 +10,29 @@ from dash import dcc, html
 from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
 from scipy import stats
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+import statsmodels.api as sm
 
 BASE_URL = "https://banks.data.fdic.gov/api"
 
 class ECLMetrics:
     def __init__(self):
+        # Core model features for ECL prediction
+        self.prediction_features = [
+            'LNLSGR',   # Total Loans
+            'RBCT1J',   # Tier 1 Capital
+            'P3ASSET',  # Past Due 30-89 Days
+            'P9ASSET',  # Past Due 90+ Days
+            'NTLNLSQ',  # Quarterly Net Charge-Offs
+            'ROA',      # Return on Assets
+            'NIMY',     # Net Interest Margin
+            'EEFFR',    # Efficiency Ratio
+            'RBC1AAJ'   # Leverage Ratio
+        ]
+
         self.raw_metrics = {
             'allowance_metrics': [
                 'LNATRES',  # Allowance for Credit Loss
@@ -56,13 +74,31 @@ class ECLMetrics:
             'gfc': {
                 'start': '20080101',
                 'end': '20101231',
-                'name': 'Global Financial Crisis'
+                'name': 'Global Financial Crisis',
+                'stress_indicators': {
+                    'gdp_decline': -2.5,
+                    'unemployment_peak': 10.0,
+                    'house_price_decline': -18.0
+                }
             },
             'covid': {
                 'start': '20200101',
                 'end': '20211231',
-                'name': 'COVID-19 Crisis'
+                'name': 'COVID-19 Crisis',
+                'stress_indicators': {
+                    'gdp_decline': -3.5,
+                    'unemployment_peak': 14.7,
+                    'business_closure_rate': 22.0
+                }
             }
+        }
+        
+        # Additional stress metrics for ECL modeling
+        self.stress_metrics = {
+            'gdp_growth': [-2.5, -3.5, 2.0],  # Historical GDP changes during stress
+            'unemployment': [10.0, 14.7, 8.0], # Peak unemployment rates
+            'interest_rates': [0.25, 0.25, 2.5], # Federal funds rates
+            'market_volatility': [80.0, 65.0, 35.0] # VIX index levels
         }
         
         # Define required columns for each hypothesis
@@ -70,10 +106,10 @@ class ECLMetrics:
             'h1': ['lnrecons', 'lnrenres', 'lnlsgr', 'lnatres'],
             'h2': ['lnconoth', 'lnlsgr', 'lnatres'],
             'h3': ['rbct1j', 'lnlsgr', 'lnatres'],
-            'h4': ['lnatres', 'lnlsgr', 'netinc']
+            'h4': self.prediction_features + ['lnatres']  # Updated for new prediction model
         }
 
-        # Define bank groups and mappings
+        # Define bank groups
         self.national_banks = [
             "Wells Fargo Bank, National Association",
             "Bank of America, National Association",
@@ -132,61 +168,66 @@ class ECLMetrics:
             "FIRST WESTROADS BANK, INC."
         ]
 
+        # Updated bank name mapping with consistent abbreviations
         self.bank_name_mapping = {
-            "First National Bank of Omaha": "FNBO",
-            "Associated Bank, National Association": "Associated Bank",
+            "Wells Fargo Bank, National Association": "Wells Fargo",
+            "Bank of America, National Association": "Bank of America",
+            "Citibank, National Association": "Citibank",
+            "JPMorgan Chase Bank, National Association": "JPMorgan Chase",
+            "U.S. Bank National Association": "U.S. Bank",
+            "PNC Bank, National Association": "PNC Bank",
+            "Truist Bank": "Truist",
+            "Goldman Sachs Bank USA": "Goldman Sachs",
+            "Morgan Stanley Bank, National Association": "Morgan Stanley",
+            "TD Bank, National Association": "TD Bank",
+            "Capital One, National Association": "Capital One",
+            "Fifth Third Bank, National Association": "Fifth Third",
+            "Citizens Bank, National Association": "Citizens",
+            "Ally Bank": "Ally",
+            "KeyBank National Association": "KeyBank",
+            "Associated Bank, National Association": "Associated",
             "BOKF, National Association": "BOKF",
             "BankUnited, National Association": "BankUnited",
-            "City National Bank of Florida": "City National Bank of Florida",
+            "City National Bank of Florida": "City National FL",
             "EverBank, National Association": "EverBank",
-            "First National Bank of Pennsylvania": "First National Bank of PA",
-            "Old National Bank": "Old National Bank",
-            "SoFi Bank, National Association": "SoFi Bank",
-            "Trustmark National Bank": "Trustmark Bank",
-            "Webster Bank, National Association": "Webster Bank",
-            "Wintrust Bank, National Association": "Wintrust Bank",
-            "Zions Bancorporation, N.A.": "Zions Bank",
-            "Capital One, National Association": "Capital One",
-            "Discover Bank": "Discover Bank",
-            "Comenity Bank": "Comenity Bank",
-            "Synchrony Bank": "Synchrony Bank",
-            "Wells Fargo Bank, National Association": "Wells Fargo",
-            "U.S. Bank National Association": "U.S. Bank",
-            "Fulton Bank, National Association": "Fulton Bank",
-            "SouthState Bank, National Association": "SouthState Bank",
-            "UMB Bank, National Association": "UMB Bank",
-            "Valley National Bank": "Valley National Bank",
-            "Bremer Bank, National Association": "Bremer Bank",
+            "First National Bank of Pennsylvania": "First National PA",
+            "Old National Bank": "Old National",
+            "SoFi Bank, National Association": "SoFi",
+            "Trustmark National Bank": "Trustmark",
+            "Webster Bank, National Association": "Webster",
+            "Wintrust Bank, National Association": "Wintrust",
+            "Zions Bancorporation, N.A.": "Zions",
+            "Fulton Bank, National Association": "Fulton",
+            "SouthState Bank, National Association": "SouthState",
+            "UMB Bank, National Association": "UMB",
+            "Valley National Bank": "Valley",
+            "Bremer Bank, National Association": "Bremer",
             "The Bank of New York Mellon": "BNY Mellon",
-            "Commerce Bank": "Commerce Bank",
-            "Frost Bank": "Frost Bank",
-            "FirstBank": "FirstBank",
-            "Pinnacle Bank": "Pinnacle Bank",
-            "Dundee Bank": "Dundee Bank",
-            "American National Bank": "American National",
-            "Five Points Bank": "Five Points Bank",
-            "Security First Bank": "Security First Bank",
-            "Security National Bank of Omaha": "Security National",
-            "Frontier Bank": "Frontier Bank",
-            "West Gate Bank": "West Gate Bank",
-            "Core Bank": "Core Bank",
-            "First State Bank Nebraska": "First State Bank",
-            "Access Bank": "Access Bank",
-            "Cornhusker Bank": "Cornhusker Bank",
-            "Arbor Bank": "Arbor Bank",
-            "Washington County Bank": "Washington County",
-            "Enterprise Bank": "Enterprise Bank",
-            "Premier Bank National Association": "Premier Bank",
-            "First Westroads Bank, Inc.": "First Westroads"
+            "Dundee Bank": "Dundee",
+            "AMERICAN NATIONAL BANK": "American National",
+            "FIVE POINTS BANK": "Five Points",
+            "SECURITY FIRST BANK": "Security First",
+            "SECURITY NATIONAL BANK OF OMAHA": "Security National",
+            "FRONTIER BANK": "Frontier",
+            "WEST GATE BANK": "West Gate",
+            "CORE BANK": "Core",
+            "FIRST STATE BANK NEBRASKA": "First State",
+            "ACCESS BANK": "Access",
+            "CORNHUSKER BANK": "Cornhusker",
+            "ARBOR BANK": "Arbor",
+            "WASHINGTON COUNTY BANK": "Washington County",
+            "ENTERPRISE BANK": "Enterprise",
+            "PREMIER BANK NATIONAL ASSOCIATION": "Premier",
+            "FIRST WESTROADS BANK, INC.": "First Westroads"
         }
-
-
+        
 class ECLDataProcessor:
     def __init__(self):
         self.metrics = ECLMetrics()
+        self.scaler = StandardScaler()
         
     def process_raw_data(self, raw_data: List[Dict]) -> pd.DataFrame:
-        """Convert raw API data into structured DataFrame"""
+        """Convert raw API data into structured DataFrame with enhanced processing"""
         if not raw_data:
             return pd.DataFrame()
             
@@ -199,15 +240,25 @@ class ECLDataProcessor:
         # Convert date format
         if 'repdte' in df.columns:
             df['date'] = pd.to_datetime(df['repdte'], format='%Y%m%d')
+            df['year'] = df['date'].dt.year
+            df['quarter'] = df['date'].dt.quarter
         
         # Convert numeric columns
-        non_numeric_cols = ['cert', 'repdte', 'date', 'bank', 'abbreviated_name']
+        non_numeric_cols = ['cert', 'repdte', 'date', 'bank', 'abbreviated_name', 'year', 'quarter']
         numeric_columns = [col for col in df.columns if col not in non_numeric_cols]
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Add bank type classification
         df['bank_type'] = df['bank'].apply(self.classify_bank_type)
+        
+        # Add abbreviated names
+        df['abbreviated_name'] = df['bank'].map(self.metrics.bank_name_mapping)
+        
+        # Add asset size classification
+        df['asset_size_class'] = pd.qcut(df['asset'], 
+                                       q=4, 
+                                       labels=['Small', 'Medium', 'Large', 'Very Large'])
         
         return df
 
@@ -223,35 +274,74 @@ class ECLDataProcessor:
             return 'Other'
 
     def calculate_ecl_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate core ECL metrics"""
+        """Calculate core ECL metrics with enhanced ratio calculations"""
         df = df.copy()
         
         try:
             # Calculate key ratios only if required columns exist
             if self.validate_required_columns(df, ['lnrecons', 'lnrenres', 'lnlsgr']):
-                df['cre_concentration'] = (
-                    (df['lnrecons'].fillna(0) + df['lnrenres'].fillna(0)) / 
-                    df['lnlsgr'] * 100
+                # CRE concentration with handling for zero denominators
+                df['cre_concentration'] = np.where(
+                    df['lnlsgr'] > 0,
+                    (df['lnrecons'].fillna(0) + df['lnrenres'].fillna(0)) / df['lnlsgr'] * 100,
+                    0
                 )
                 
             if self.validate_required_columns(df, ['lnconoth', 'lnlsgr']):
-                df['consumer_loan_ratio'] = (
-                    df['lnconoth'].fillna(0) / df['lnlsgr'] * 100
+                # Consumer loan ratio with handling for zero denominators
+                df['consumer_loan_ratio'] = np.where(
+                    df['lnlsgr'] > 0,
+                    df['lnconoth'].fillna(0) / df['lnlsgr'] * 100,
+                    0
                 )
                 
             if self.validate_required_columns(df, ['lnatres', 'lnlsgr']):
-                df['ecl_coverage'] = (
-                    df['lnatres'].fillna(0) / df['lnlsgr'] * 100
+                # ECL coverage with handling for zero denominators
+                df['ecl_coverage'] = np.where(
+                    df['lnlsgr'] > 0,
+                    df['lnatres'].fillna(0) / df['lnlsgr'] * 100,
+                    0
                 )
                 
             if self.validate_required_columns(df, ['ntlnlsq', 'lnlsgr']):
-                df['nco_rate'] = (
-                    (df['ntlnlsq'].fillna(0) * 4) / df['lnlsgr'] * 100
+                # Net charge-off rate with handling for zero denominators
+                df['nco_rate'] = np.where(
+                    df['lnlsgr'] > 0,
+                    (df['ntlnlsq'].fillna(0) * 4) / df['lnlsgr'] * 100,
+                    0
                 )
                 
             if self.validate_required_columns(df, ['rbct1j', 'lnlsgr']):
-                df['tier1_ratio'] = (
-                    df['rbct1j'].fillna(0) / df['lnlsgr'] * 100
+                # Tier 1 ratio with handling for zero denominators
+                df['tier1_ratio'] = np.where(
+                    df['lnlsgr'] > 0,
+                    df['rbct1j'].fillna(0) / df['lnlsgr'] * 100,
+                    0
+                )
+            
+            # Additional risk metrics
+            if self.validate_required_columns(df, ['p3asset', 'p9asset', 'asset']):
+                # Past due ratio
+                df['past_due_ratio'] = np.where(
+                    df['asset'] > 0,
+                    (df['p3asset'].fillna(0) + df['p9asset'].fillna(0)) / df['asset'] * 100,
+                    0
+                )
+            
+            # Asset quality indicator
+            if self.validate_required_columns(df, ['lnatres', 'p9asset']):
+                df['coverage_ratio'] = np.where(
+                    df['p9asset'] > 0,
+                    df['lnatres'].fillna(0) / df['p9asset'].fillna(0) * 100,
+                    0
+                )
+            
+            # Liquidity measure
+            if self.validate_required_columns(df, ['dep', 'asset']):
+                df['deposit_ratio'] = np.where(
+                    df['asset'] > 0,
+                    df['dep'].fillna(0) / df['asset'] * 100,
+                    0
                 )
                 
         except Exception as e:
@@ -267,7 +357,7 @@ class ECLDataProcessor:
         return True
 
     def calculate_stress_period_changes(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate metric changes during stress periods"""
+        """Calculate metric changes during stress periods with improved handling of outliers"""
         df = df.copy()
         
         for period_name, period_info in self.metrics.stress_periods.items():
@@ -280,37 +370,106 @@ class ECLDataProcessor:
             for metric in ['ecl_coverage', 'nco_rate', 'tier1_ratio']:
                 if metric in df.columns:
                     change_col = f'{metric}_change_{period_name}'
-                    df.loc[period_mask, change_col] = (
-                        df.loc[period_mask, metric].groupby(df['cert']).pct_change() * 100
+                    
+                    # Calculate changes with outlier handling
+                    changes = df.loc[period_mask, metric].groupby(df.loc[period_mask, 'cert']).pct_change() * 100
+                    
+                    # Remove extreme outliers (beyond 3 std dev)
+                    mean_change = changes.mean()
+                    std_change = changes.std()
+                    changes = np.clip(changes, 
+                                    mean_change - 3 * std_change,
+                                    mean_change + 3 * std_change)
+                    
+                    df.loc[period_mask, change_col] = changes
+                    
+                    # Add rolling averages for trend analysis
+                    df.loc[period_mask, f'{change_col}_3m_avg'] = (
+                        df.loc[period_mask, change_col].groupby(df.loc[period_mask, 'cert'])
+                        .rolling(window=3, min_periods=1)
+                        .mean()
+                        .reset_index(0, drop=True)
                     )
         
         return df
 
+    def prepare_prediction_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Prepare features for ECL prediction model"""
+        # Create lowercase version of prediction features
+        lowercase_features = [feat.lower() for feat in self.metrics.prediction_features]
+        
+        # Select relevant features
+        features = df[lowercase_features].copy()
+        
+        # Handle missing values
+        features = features.fillna(features.mean())
+        
+        # Scale features
+        scaled_features = pd.DataFrame(
+            self.scaler.fit_transform(features),
+            columns=features.columns,
+            index=features.index
+        )
+        
+        # Create target variable (ECL)
+        target = df['lnatres'].copy()
+        
+        return scaled_features, target
+
     def calculate_predicted_ecl_and_error(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate predicted ECL and prediction error"""
+        """Calculate predicted ECL using advanced modeling techniques"""
         df = df.copy()
         try:
-            # Ensure necessary columns are present
-            if self.validate_required_columns(df, ['lnlsgr', 'nco_rate', 'tier1_ratio', 'lnatres']):
-                df['predicted_ecl'] = (
-                    df['lnlsgr'] * 
-                    (df['nco_rate'] / 100) * 
-                    (1 + df['tier1_ratio'] / 100)
-                )
-                df['prediction_error'] = (
-                    (df['predicted_ecl'] - df['lnatres']) / df['lnatres'] * 100
-                )
+            # Prepare features and target
+            features, target = self.prepare_prediction_features(df)
+            
+            # Split data for model training
+            X_train, X_test, y_train, y_test = train_test_split(
+                features, target, test_size=0.2, random_state=42
+            )
+            
+            # Train Random Forest model
+            rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+            rf_model.fit(X_train, y_train)
+            
+            # Make predictions
+            df['predicted_ecl'] = rf_model.predict(features)
+            
+            # Calculate prediction errors
+            df['prediction_error'] = (
+                (df['predicted_ecl'] - df['lnatres']) / df['lnatres'] * 100
+            )
+            
+            # Calculate model performance metrics
+            r2_train = r2_score(y_train, rf_model.predict(X_train))
+            r2_test = r2_score(y_test, rf_model.predict(X_test))
+            
+            # Store model performance metrics
+            df['model_r2_train'] = r2_train
+            df['model_r2_test'] = r2_test
+            
+            # Feature importance analysis
+            importance_df = pd.DataFrame({
+                'feature': self.metrics.prediction_features,
+                'importance': rf_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
+            # Store top 3 important features
+            df['top_predictors'] = ', '.join(importance_df['feature'].head(3).tolist())
+            
         except Exception as e:
             print(f"Error calculating predicted ECL and error: {str(e)}")
+            
         return df
-
+    
 class HypothesisTester:
     def __init__(self):
         self.metrics = ECLMetrics()
         self.significance_level = 0.05
+        self.min_sample_size = 30  # Minimum sample size for reliable testing
 
     def test_hypothesis_1(self, df: pd.DataFrame, period: str) -> Dict:
-        """Test if banks with high CRE concentration experience larger ECL increases"""
+        """Test if banks with high CRE concentration experience larger ECL increases with enhanced analysis"""
         try:
             period_info = self.metrics.stress_periods[period]
             
@@ -320,10 +479,14 @@ class HypothesisTester:
                 (df['date'] <= pd.to_datetime(period_info['end']))
             ].copy()
             
-            # Remove any invalid values
-            stress_df = stress_df.replace([np.inf, -np.inf], np.nan).dropna(
-                subset=['cre_concentration', f'ecl_coverage_change_{period}']
+            # Remove invalid values and outliers
+            stress_df = self._clean_data(
+                stress_df, 
+                ['cre_concentration', f'ecl_coverage_change_{period}']
             )
+            
+            if len(stress_df) < self.min_sample_size:
+                return {'error': 'Insufficient data for reliable analysis'}
             
             # Create quartiles based on CRE concentration
             stress_df['cre_quartile'] = pd.qcut(
@@ -336,46 +499,64 @@ class HypothesisTester:
             top_quartile = stress_df[stress_df['cre_quartile'] == 'Q4'][f'ecl_coverage_change_{period}']
             bottom_quartile = stress_df[stress_df['cre_quartile'] == 'Q1'][f'ecl_coverage_change_{period}']
             
-            difference_pct = ((top_quartile.mean() - bottom_quartile.mean()) / 
-                            abs(bottom_quartile.mean())) * 100
-            
-            # Perform statistical test
-            stat, p_value = stats.mannwhitneyu(
+            # Perform statistical tests
+            mw_stat, mw_pvalue = stats.mannwhitneyu(
                 top_quartile.dropna(),
                 bottom_quartile.dropna(),
                 alternative='greater'
             )
             
+            # Calculate effect size (Cohen's d)
+            effect_size = (top_quartile.mean() - bottom_quartile.mean()) / np.sqrt(
+                (top_quartile.var() + bottom_quartile.var()) / 2
+            )
+            
+            # Additional statistical analysis
+            ttest_stat, ttest_pvalue = stats.ttest_ind(
+                top_quartile.dropna(),
+                bottom_quartile.dropna()
+            )
+            
+            # Run regression analysis
+            X = sm.add_constant(stress_df['cre_concentration'])
+            y = stress_df[f'ecl_coverage_change_{period}']
+            model = sm.OLS(y, X).fit()
+            
             return {
-                'difference_pct': difference_pct,
-                'hypothesis_supported': difference_pct >= 20 and p_value < self.significance_level,
-                'p_value': p_value,
-                'statistic': stat,
-                'top_quartile_mean': top_quartile.mean(),
-                'bottom_quartile_mean': bottom_quartile.mean(),
-                'sample_size': len(top_quartile) + len(bottom_quartile),
-                'quartile_details': {
-                    'Q4': {
-                        'mean': top_quartile.mean(),
-                        'median': top_quartile.median(),
-                        'std': top_quartile.std(),
-                        'count': len(top_quartile)
+                'summary_statistics': {
+                    'top_quartile_mean': top_quartile.mean(),
+                    'bottom_quartile_mean': bottom_quartile.mean(),
+                    'median_difference': top_quartile.median() - bottom_quartile.median(),
+                    'effect_size': effect_size,
+                    'sample_size': len(top_quartile) + len(bottom_quartile)
+                },
+                'statistical_tests': {
+                    'mann_whitney_u': {
+                        'statistic': mw_stat,
+                        'p_value': mw_pvalue
                     },
-                    'Q1': {
-                        'mean': bottom_quartile.mean(),
-                        'median': bottom_quartile.median(),
-                        'std': bottom_quartile.std(),
-                        'count': len(bottom_quartile)
+                    't_test': {
+                        'statistic': ttest_stat,
+                        'p_value': ttest_pvalue
                     }
-                }
+                },
+                'regression_analysis': {
+                    'coefficient': model.params[1],
+                    'r_squared': model.rsquared,
+                    'p_value': model.pvalues[1]
+                },
+                'hypothesis_supported': (
+                    mw_pvalue < self.significance_level and
+                    effect_size > 0.5
+                )
             }
             
         except Exception as e:
             print(f"Error testing hypothesis 1: {str(e)}")
-            return {}
+            return {'error': str(e)}
 
     def test_hypothesis_2(self, df: pd.DataFrame, period: str) -> Dict:
-        """Test consumer loan portfolio sensitivity during stress periods"""
+        """Test consumer loan portfolio sensitivity with enhanced analysis"""
         try:
             period_info = self.metrics.stress_periods[period]
             
@@ -385,10 +566,14 @@ class HypothesisTester:
                 (df['date'] <= pd.to_datetime(period_info['end']))
             ].copy()
             
-            # Remove invalid values
-            stress_df = stress_df.replace([np.inf, -np.inf], np.nan).dropna(
-                subset=['consumer_loan_ratio', f'ecl_coverage_change_{period}']
+            # Remove invalid values and outliers
+            stress_df = self._clean_data(
+                stress_df, 
+                ['consumer_loan_ratio', f'ecl_coverage_change_{period}']
             )
+            
+            if len(stress_df) < self.min_sample_size:
+                return {'error': 'Insufficient data for reliable analysis'}
 
             # Calculate median consumer loan ratio
             median_consumer_ratio = stress_df['consumer_loan_ratio'].median()
@@ -399,43 +584,79 @@ class HypothesisTester:
 
             # Calculate ECL changes
             metric = f'ecl_coverage_change_{period}'
-
             high_changes = high_consumer[metric].dropna()
             low_changes = low_consumer[metric].dropna()
 
-            if len(high_changes) == 0 or len(low_changes) == 0:
-                raise ValueError("No data available for high or low consumer loan groups.")
-
-            # Perform statistical test
-            stat, p_value = stats.mannwhitneyu(
+            # Perform statistical tests
+            mw_stat, mw_pvalue = stats.mannwhitneyu(
                 high_changes,
                 low_changes,
                 alternative='greater'
             )
-
-            difference_pct = ((high_changes.mean() - low_changes.mean()) / 
-                            abs(low_changes.mean())) * 100
+            
+            # Calculate effect size
+            effect_size = (high_changes.mean() - low_changes.mean()) / np.sqrt(
+                (high_changes.var() + low_changes.var()) / 2
+            )
+            
+            # Run regression analysis
+            X = sm.add_constant(stress_df['consumer_loan_ratio'])
+            y = stress_df[metric]
+            model = sm.OLS(y, X).fit()
+            
+            # Time series analysis
+            high_consumer_ts = (
+                high_consumer.groupby('date')[metric]
+                .mean()
+                .rolling(window=3)
+                .mean()
+            )
+            
+            low_consumer_ts = (
+                low_consumer.groupby('date')[metric]
+                .mean()
+                .rolling(window=3)
+                .mean()
+            )
 
             return {
-                'difference_pct': difference_pct,
-                'hypothesis_supported': difference_pct >= 0 and p_value < self.significance_level,
-                'p_value': p_value,
-                'statistic': stat,
-                'high_consumer_mean': high_changes.mean(),
-                'low_consumer_mean': low_changes.mean(),
-                'median_consumer_ratio': median_consumer_ratio,
-                'sample_size': {
-                    'high_consumer': len(high_changes),
-                    'low_consumer': len(low_changes)
-                }
+                'summary_statistics': {
+                    'high_consumer_mean': high_changes.mean(),
+                    'low_consumer_mean': low_changes.mean(),
+                    'median_difference': high_changes.median() - low_changes.median(),
+                    'effect_size': effect_size,
+                    'sample_size': {
+                        'high_consumer': len(high_changes),
+                        'low_consumer': len(low_changes)
+                    }
+                },
+                'statistical_tests': {
+                    'mann_whitney_u': {
+                        'statistic': mw_stat,
+                        'p_value': mw_pvalue
+                    }
+                },
+                'regression_analysis': {
+                    'coefficient': model.params[1],
+                    'r_squared': model.rsquared,
+                    'p_value': model.pvalues[1]
+                },
+                'time_series_analysis': {
+                    'high_consumer_trend': high_consumer_ts.to_dict(),
+                    'low_consumer_trend': low_consumer_ts.to_dict()
+                },
+                'hypothesis_supported': (
+                    mw_pvalue < self.significance_level and
+                    effect_size > 0.3
+                )
             }
             
         except Exception as e:
             print(f"Error testing hypothesis 2: {str(e)}")
-            return {}
+            return {'error': str(e)}
 
     def test_hypothesis_3(self, df: pd.DataFrame, period: str) -> Dict:
-        """Test if higher capital ratios lead to smaller ECL increases"""
+        """Test if higher capital ratios lead to smaller ECL increases with enhanced analysis"""
         try:
             period_info = self.metrics.stress_periods[period]
             
@@ -445,11 +666,15 @@ class HypothesisTester:
                 (df['date'] <= pd.to_datetime(period_info['end']))
             ].copy()
             
-            # Remove invalid values
-            stress_df = stress_df.replace([np.inf, -np.inf], np.nan).dropna(
-                subset=['tier1_ratio', f'ecl_coverage_change_{period}']
+            # Remove invalid values and outliers
+            stress_df = self._clean_data(
+                stress_df, 
+                ['tier1_ratio', f'ecl_coverage_change_{period}']
             )
             
+            if len(stress_df) < self.min_sample_size:
+                return {'error': 'Insufficient data for reliable analysis'}
+
             # Calculate median Tier 1 ratio
             median_tier1 = stress_df['tier1_ratio'].median()
             
@@ -459,41 +684,72 @@ class HypothesisTester:
             
             # Calculate ECL changes
             metric = f'ecl_coverage_change_{period}'
-            
             high_changes = high_capital[metric].dropna()
             low_changes = low_capital[metric].dropna()
             
-            # Calculate difference percentage
-            difference_pct = ((high_changes.mean() - low_changes.mean()) / 
-                            abs(low_changes.mean())) * -100  # Negative because we expect smaller increases
-            
-            # Perform statistical test
-            stat, p_value = stats.mannwhitneyu(
+            # Perform statistical tests
+            mw_stat, mw_pvalue = stats.mannwhitneyu(
                 high_changes,
                 low_changes,
                 alternative='less'
             )
             
+            # Calculate effect size
+            effect_size = (high_changes.mean() - low_changes.mean()) / np.sqrt(
+                (high_changes.var() + low_changes.var()) / 2
+            )
+            
+            # Run regression analysis
+            X = sm.add_constant(stress_df['tier1_ratio'])
+            y = stress_df[metric]
+            model = sm.OLS(y, X).fit()
+            
+            # Additional analysis by bank type
+            bank_type_analysis = {}
+            for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+                type_data = stress_df[stress_df['bank_type'] == bank_type]
+                if len(type_data) > 0:
+                    bank_type_analysis[bank_type] = {
+                        'mean_tier1': type_data['tier1_ratio'].mean(),
+                        'mean_ecl_change': type_data[metric].mean(),
+                        'correlation': type_data['tier1_ratio'].corr(type_data[metric])
+                    }
+
             return {
-                'difference_pct': difference_pct,
-                'hypothesis_supported': difference_pct >= 15 and p_value < self.significance_level,
-                'p_value': p_value,
-                'statistic': stat,
-                'high_capital_mean': high_changes.mean(),
-                'low_capital_mean': low_changes.mean(),
-                'median_tier1': median_tier1,
-                'sample_size': {
-                    'high_capital': len(high_changes),
-                    'low_capital': len(low_changes)
-                }
+                'summary_statistics': {
+                    'high_capital_mean': high_changes.mean(),
+                    'low_capital_mean': low_changes.mean(),
+                    'median_difference': high_changes.median() - low_changes.median(),
+                    'effect_size': effect_size,
+                    'sample_size': {
+                        'high_capital': len(high_changes),
+                        'low_capital': len(low_changes)
+                    }
+                },
+                'statistical_tests': {
+                    'mann_whitney_u': {
+                        'statistic': mw_stat,
+                        'p_value': mw_pvalue
+                    }
+                },
+                'regression_analysis': {
+                    'coefficient': model.params[1],
+                    'r_squared': model.rsquared,
+                    'p_value': model.pvalues[1]
+                },
+                'bank_type_analysis': bank_type_analysis,
+                'hypothesis_supported': (
+                    mw_pvalue < self.significance_level and
+                    effect_size < -0.3
+                )
             }
             
         except Exception as e:
             print(f"Error testing hypothesis 3: {str(e)}")
-            return {}
+            return {'error': str(e)}
 
     def test_hypothesis_4(self, df: pd.DataFrame, period: str) -> Dict:
-        """Test if model estimates are within 10% of actual ECL"""
+        """Test ECL prediction model accuracy with comprehensive validation"""
         try:
             period_info = self.metrics.stress_periods[period]
             
@@ -504,39 +760,94 @@ class HypothesisTester:
             ].copy()
             
             # Remove invalid values
-            stress_df = stress_df.replace([np.inf, -np.inf], np.nan).dropna(
-                subset=['lnatres', 'predicted_ecl', 'prediction_error']
+            stress_df = self._clean_data(
+                stress_df, 
+                ['lnatres', 'predicted_ecl', 'prediction_error']
             )
             
-            # Calculate actual vs. predicted ECL
+            if len(stress_df) < self.min_sample_size:
+                return {'error': 'Insufficient data for reliable analysis'}
+            
+            # Calculate prediction accuracy metrics
             actual_ecl = stress_df['lnatres']
             predicted_ecl = stress_df['predicted_ecl']
+            prediction_errors = stress_df['prediction_error'].abs()
             
-            # Calculate percentage difference
-            pct_diff = stress_df['prediction_error'].abs()
+            # Calculate R-squared
+            r2 = r2_score(actual_ecl, predicted_ecl)
             
-            # Calculate accuracy metrics
-            within_10_pct = (pct_diff <= 10).mean() * 100
-            mean_abs_error = pct_diff.mean()
+            # Calculate RMSE
+            rmse = np.sqrt(mean_squared_error(actual_ecl, predicted_ecl))
             
+            # Calculate accuracy by bank type
+            bank_type_analysis = {}
+            for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+                type_data = stress_df[stress_df['bank_type'] == bank_type]
+                if len(type_data) > 0:
+                    bank_type_analysis[bank_type] = {
+                        'mean_error': type_data['prediction_error'].mean(),
+                        'median_error': type_data['prediction_error'].median(),
+                        'rmse': np.sqrt(mean_squared_error(
+                            type_data['lnatres'],
+                            type_data['predicted_ecl']
+                        )),
+                        'r2': r2_score(
+                            type_data['lnatres'],
+                            type_data['predicted_ecl']
+                        )
+                    }
+
             return {
-                'within_10_pct': within_10_pct,
-                'mean_abs_error': mean_abs_error,
-                'hypothesis_supported': within_10_pct >= 90,  # At least 90% of predictions within 10%
-                'sample_size': len(actual_ecl),
+                'model_performance': {
+                    'r_squared': r2,
+                    'rmse': rmse,
+                    'mean_absolute_error': prediction_errors.mean(),
+                    'median_absolute_error': prediction_errors.median(),
+                    'prediction_within_10_percent': (prediction_errors <= 10).mean() * 100
+                },
                 'error_distribution': {
-                    'mean': pct_diff.mean(),
-                    'median': pct_diff.median(),
-                    'std': pct_diff.std(),
-                    'max': pct_diff.max(),
-                    'min': pct_diff.min()
-                }
+                    'std_dev': prediction_errors.std(),
+                    'skewness': prediction_errors.skew(),
+                    'kurtosis': prediction_errors.kurtosis(),
+                    'percentiles': {
+                        '25th': prediction_errors.quantile(0.25),
+                        '50th': prediction_errors.quantile(0.50),
+                        '75th': prediction_errors.quantile(0.75),
+                        '90th': prediction_errors.quantile(0.90)
+                    }
+                },
+                'bank_type_analysis': bank_type_analysis,
+                'time_series_analysis': {
+                    'error_trend': stress_df.groupby('date')['prediction_error'].mean().to_dict(),
+                    'accuracy_trend': stress_df.groupby('date').apply(
+                        lambda x: (x['prediction_error'].abs() <= 10).mean() * 100
+                    ).to_dict()
+                },
+                'hypothesis_supported': (
+                    r2 >= 0.7 and
+                    (prediction_errors <= 10).mean() >= 0.9
+                )
             }
             
         except Exception as e:
             print(f"Error testing hypothesis 4: {str(e)}")
-            return {}
+            return {'error': str(e)}
+
+    def _clean_data(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+        """Clean data by removing invalid values and outliers"""
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=columns)
         
+        # Remove outliers (beyond 3 standard deviations)
+        for col in columns:
+            mean = df[col].mean()
+            std = df[col].std()
+            df = df[
+                (df[col] >= mean - 3 * std) &
+                (df[col] <= mean + 3 * std)
+            ]
+        
+        return df
+
 class ECLVisualizer:
     def __init__(self):
         self.metrics = ECLMetrics()
@@ -549,18 +860,19 @@ class ECLVisualizer:
             'grid': '#e6e6e6',
             'national': '#003f5c',
             'regional': '#58508d',
-            'nebraska': '#bc5090'
+            'nebraska': '#bc5090',
+            'trend': '#ff6361'
         }
         self.layout_defaults = dict(
             plot_bgcolor=self.color_scheme['background'],
             paper_bgcolor=self.color_scheme['background'],
             font=dict(color='#333333'),
-            height=700,
+            height=400,  # Reduced height for better layout
             margin=dict(l=50, r=20, t=50, b=50)
         )
 
-    def create_hypothesis1_visualization(self, df: pd.DataFrame, period: str) -> go.Figure:
-        """Create visualization for CRE concentration hypothesis"""
+    def create_hypothesis1_visualization(self, df: pd.DataFrame, period: str) -> Dict[str, go.Figure]:
+        """Create multiple visualizations for CRE concentration hypothesis"""
         period_info = self.metrics.stress_periods[period]
         
         # Filter and prepare data
@@ -581,92 +893,122 @@ class ECLVisualizer:
             labels=['Q1', 'Q2', 'Q3', 'Q4']
         )
         
-        # Create subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=(
-                "ECL Changes by CRE Concentration Quartile and Bank Type",
-                "Time Series of ECL Changes",
-                "CRE Concentration Distribution by Bank Type",
-                "ECL vs CRE Concentration by Bank Type"
-            ),
-            vertical_spacing=0.15
-        )
+        figures = {}
         
-        # Box plot of ECL changes by quartile and bank type
+        # Figure 1: Box Plot by Bank Type
+        box_fig = go.Figure()
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            box_fig.add_trace(
                 go.Box(
                     x=bank_data['cre_quartile'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
                     name=bank_type,
                     marker_color=self.color_scheme[bank_type.split()[0].lower()]
-                ),
-                row=1, col=1
+                )
             )
+        box_fig.update_layout(
+            title="ECL Changes by CRE Concentration Quartile and Bank Type",
+            xaxis_title="CRE Concentration Quartile",
+            yaxis_title="ECL Change (%)",
+            **self.layout_defaults
+        )
+        figures['box_plot'] = box_fig
         
-        # Time series by bank type
+        # Figure 2: Time Series Trend
+        time_fig = go.Figure()
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            bank_data = bank_data.sort_values('date')
-            fig.add_trace(
+            bank_data = stress_df[stress_df['bank_type'] == bank_type].sort_values('date')
+            time_fig.add_trace(
                 go.Scatter(
                     x=bank_data['date'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
                     name=bank_type,
                     mode='lines+markers',
                     line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
-                ),
-                row=1, col=2
+                )
             )
+        time_fig.update_layout(
+            title="Time Series of ECL Changes by Bank Type",
+            xaxis_title="Date",
+            yaxis_title="ECL Change (%)",
+            **self.layout_defaults
+        )
+        figures['time_series'] = time_fig
         
-        # Distribution histogram by bank type
+        # Figure 3: Scatter Plot with Trend Lines
+        scatter_fig = go.Figure()
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
-                go.Histogram(
-                    x=bank_data['cre_concentration'],
-                    name=bank_type,
-                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
-                    opacity=0.7
-                ),
-                row=2, col=1
-            )
-        
-        # Scatter plot by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            # Add scatter points
+            scatter_fig.add_trace(
                 go.Scatter(
                     x=bank_data['cre_concentration'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
                     mode='markers',
-                    name=bank_type,
+                    name=f'{bank_type} Data',
                     marker=dict(
                         color=self.color_scheme[bank_type.split()[0].lower()],
-                        size=10,
-                        opacity=0.7
+                        size=8,
+                        opacity=0.6
                     )
-                ),
-                row=2, col=2
+                )
+            )
+            
+            # Add trend line
+            z = np.polyfit(bank_data['cre_concentration'], 
+                          bank_data[f'ecl_coverage_change_{period}'], 1)
+            p = np.poly1d(z)
+            x_trend = np.linspace(bank_data['cre_concentration'].min(), 
+                                bank_data['cre_concentration'].max(), 100)
+            scatter_fig.add_trace(
+                go.Scatter(
+                    x=x_trend,
+                    y=p(x_trend),
+                    mode='lines',
+                    name=f'{bank_type} Trend',
+                    line=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        dash='dash'
+                    )
+                )
             )
         
-        # Update layout
-        fig.update_layout(
-            title_text=f"CRE Concentration Analysis During {period_info['name']} by Bank Type",
-            showlegend=True,
+        scatter_fig.update_layout(
+            title="ECL Change vs CRE Concentration by Bank Type",
+            xaxis_title="CRE Concentration (%)",
+            yaxis_title="ECL Change (%)",
             **self.layout_defaults
         )
+        figures['scatter_plot'] = scatter_fig
         
-        # Update axes
-        fig.update_xaxes(title_text="CRE Concentration (%)", row=2, col=2)
-        fig.update_yaxes(title_text="ECL Change (%)", row=2, col=2)
+        # Figure 4: Distribution Analysis
+        dist_fig = go.Figure()
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            dist_fig.add_trace(
+                go.Histogram(
+                    x=bank_data['cre_concentration'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                    opacity=0.7,
+                    nbinsx=30
+                )
+            )
+        dist_fig.update_layout(
+            title="CRE Concentration Distribution by Bank Type",
+            xaxis_title="CRE Concentration (%)",
+            yaxis_title="Count",
+            barmode='overlay',
+            **self.layout_defaults
+        )
+        figures['distribution'] = dist_fig
         
-        return fig
+        return figures
 
-    def create_hypothesis2_visualization(self, df: pd.DataFrame, period: str) -> go.Figure:
-        """Create visualization for consumer loan sensitivity hypothesis"""
+    def create_hypothesis2_visualization(self, df: pd.DataFrame, period: str) -> Dict[str, go.Figure]:
+        """Create multiple visualizations for consumer loan sensitivity hypothesis"""
         period_info = self.metrics.stress_periods[period]
         
         # Filter and prepare data
@@ -682,96 +1024,159 @@ class ECLVisualizer:
         
         # Calculate median consumer loan ratio
         median_consumer_ratio = stress_df['consumer_loan_ratio'].median()
-        
-        # Create high/low consumer loan groups
         stress_df['consumer_group'] = np.where(
             stress_df['consumer_loan_ratio'] > median_consumer_ratio,
             'High Consumer',
             'Low Consumer'
         )
         
-        # Create subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=(
-                "ECL Changes by Consumer Loan Concentration and Bank Type",
-                "Time Series of ECL Changes by Bank Type",
-                "Consumer Loan Ratio Distribution by Bank Type",
-                "ECL Change vs Consumer Loan Ratio by Bank Type"
-            ),
-            vertical_spacing=0.15
+        figures = {}
+        
+        # Figure 1: Box Plot by Bank Type and Consumer Group
+        box_fig = go.Figure()
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            for consumer_group in ['High Consumer', 'Low Consumer']:
+                group_data = stress_df[
+                    (stress_df['bank_type'] == bank_type) & 
+                    (stress_df['consumer_group'] == consumer_group)
+                ]
+                box_fig.add_trace(
+                    go.Box(
+                        x=[f"{bank_type}<br>{consumer_group}"],
+                        y=group_data[f'ecl_coverage_change_{period}'],
+                        name=f"{bank_type} - {consumer_group}",
+                        marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                        opacity=0.7 if consumer_group == 'Low Consumer' else 1
+                    )
+                )
+        box_fig.update_layout(
+            title="ECL Changes by Bank Type and Consumer Loan Concentration",
+            xaxis_title="Bank Type and Consumer Loan Group",
+            yaxis_title="ECL Change (%)",
+            showlegend=True,
+            **self.layout_defaults
         )
+        figures['box_plot'] = box_fig
+
+        # Figure 2: Time Series Analysis
+        time_fig = go.Figure()
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            for consumer_group in ['High Consumer', 'Low Consumer']:
+                group_data = stress_df[
+                    (stress_df['bank_type'] == bank_type) & 
+                    (stress_df['consumer_group'] == consumer_group)
+                ].sort_values('date')
+                
+                # Calculate moving average
+                group_data['ma'] = group_data[f'ecl_coverage_change_{period}'].rolling(window=3).mean()
+                
+                time_fig.add_trace(
+                    go.Scatter(
+                        x=group_data['date'],
+                        y=group_data['ma'],
+                        name=f"{bank_type} - {consumer_group}",
+                        mode='lines',
+                        line=dict(
+                            color=self.color_scheme[bank_type.split()[0].lower()],
+                            dash='dash' if consumer_group == 'Low Consumer' else 'solid'
+                        )
+                    )
+                )
+        time_fig.update_layout(
+            title="Time Series of ECL Changes by Bank Type and Consumer Loan Group",
+            xaxis_title="Date",
+            yaxis_title="ECL Change (%) - 3-Month Moving Average",
+            **self.layout_defaults
+        )
+        figures['time_series'] = time_fig
         
-        # Box plot by bank type
+        # Figure 3: Scatter Plot with Regression Lines
+        scatter_fig = go.Figure()
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
-                go.Box(
-                    x=bank_data['consumer_group'],
-                    y=bank_data[f'ecl_coverage_change_{period}'],
-                    name=bank_type,
-                    marker_color=self.color_scheme[bank_type.split()[0].lower()]
-                ),
-                row=1, col=1
-            )
-        
-        # Time series by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            bank_data = bank_data.sort_values('date')
-            fig.add_trace(
-                go.Scatter(
-                    x=bank_data['date'],
-                    y=bank_data[f'ecl_coverage_change_{period}'],
-                    name=bank_type,
-                    mode='lines+markers',
-                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
-                ),
-                row=1, col=2
-            )
-        
-        # Distribution histogram by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
-                go.Histogram(
-                    x=bank_data['consumer_loan_ratio'],
-                    name=bank_type,
-                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
-                    opacity=0.7
-                ),
-                row=2, col=1
-            )
-        
-        # Scatter plot by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            # Add scatter points
+            scatter_fig.add_trace(
                 go.Scatter(
                     x=bank_data['consumer_loan_ratio'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
                     mode='markers',
+                    name=f'{bank_type}',
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=8,
+                        opacity=0.6
+                    )
+                )
+            )
+            
+            # Add regression line
+            z = np.polyfit(bank_data['consumer_loan_ratio'], 
+                          bank_data[f'ecl_coverage_change_{period}'], 1)
+            p = np.poly1d(z)
+            x_trend = np.linspace(bank_data['consumer_loan_ratio'].min(), 
+                                bank_data['consumer_loan_ratio'].max(), 100)
+            scatter_fig.add_trace(
+                go.Scatter(
+                    x=x_trend,
+                    y=p(x_trend),
+                    mode='lines',
+                    name=f'{bank_type} Trend',
+                    line=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        dash='dash'
+                    )
+                )
+            )
+            
+        scatter_fig.update_layout(
+            title="ECL Change vs Consumer Loan Ratio",
+            xaxis_title="Consumer Loan Ratio (%)",
+            yaxis_title="ECL Change (%)",
+            **self.layout_defaults
+        )
+        figures['scatter_plot'] = scatter_fig
+        
+        # Figure 4: Risk Profile Analysis
+        risk_fig = go.Figure()
+        
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            
+            # Calculate risk metrics
+            risk_data = bank_data.groupby('consumer_group').agg({
+                f'ecl_coverage_change_{period}': ['mean', 'std'],
+                'tier1_ratio': 'mean'
+            }).reset_index()
+            
+            risk_fig.add_trace(
+                go.Scatter(
+                    x=risk_data['consumer_group'],
+                    y=risk_data[f'ecl_coverage_change_{period}']['mean'],
+                    mode='markers+text',
                     name=bank_type,
                     marker=dict(
                         color=self.color_scheme[bank_type.split()[0].lower()],
-                        size=10,
-                        opacity=0.7
-                    )
-                ),
-                row=2, col=2
+                        size=risk_data['tier1_ratio']['mean'] * 2,  # Size based on tier 1 ratio
+                        sizemode='diameter'
+                    ),
+                    text=bank_type,
+                    textposition='top center'
+                )
             )
-        
-        # Update layout
-        fig.update_layout(
-            title_text=f"Consumer Loan Analysis During {period_info['name']} by Bank Type",
-            showlegend=True,
+            
+        risk_fig.update_layout(
+            title="Risk Profile by Bank Type and Consumer Loan Exposure",
+            xaxis_title="Consumer Loan Group",
+            yaxis_title="Mean ECL Change (%)",
             **self.layout_defaults
         )
+        figures['risk_profile'] = risk_fig
         
-        return fig
-    
-    def create_hypothesis3_visualization(self, df: pd.DataFrame, period: str) -> go.Figure:
-        """Create visualization for capital structure hypothesis"""
+        return figures
+
+    def create_hypothesis3_visualization(self, df: pd.DataFrame, period: str) -> Dict[str, go.Figure]:
+        """Create multiple visualizations for capital structure hypothesis"""
         period_info = self.metrics.stress_periods[period]
         
         # Filter and prepare data
@@ -785,6 +1190,7 @@ class ECLVisualizer:
             subset=['tier1_ratio', f'ecl_coverage_change_{period}']
         )
         
+        # Calculate median tier1 ratio
         median_tier1 = stress_df['tier1_ratio'].median()
         stress_df['capital_group'] = np.where(
             stress_df['tier1_ratio'] > median_tier1,
@@ -792,63 +1198,87 @@ class ECLVisualizer:
             'Low Capital'
         )
         
-        # Create subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=(
-                "ECL Changes by Capital Level and Bank Type",
-                "Time Series of ECL Changes by Bank Type",
-                "Tier 1 Ratio Distribution by Bank Type",
-                "ECL vs Tier 1 Ratio by Bank Type"
-            ),
-            vertical_spacing=0.15
-        )
+        figures = {}
         
-        # Box plot by bank type
+        # Figure 1: Capital Buffer Analysis
+        buffer_fig = go.Figure()
+        
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            buffer_fig.add_trace(
                 go.Box(
                     x=bank_data['capital_group'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
                     name=bank_type,
                     marker_color=self.color_scheme[bank_type.split()[0].lower()]
-                ),
-                row=1, col=1
+                )
             )
+            
+        buffer_fig.update_layout(
+            title="Capital Buffer Impact on ECL Changes",
+            xaxis_title="Capital Level",
+            yaxis_title="ECL Change (%)",
+            **self.layout_defaults
+        )
+        figures['capital_buffer'] = buffer_fig
         
-        # Time series by bank type
+        # Figure 2: Time Series of Capital Adequacy
+        time_fig = go.Figure()
+        
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            bank_data = bank_data.sort_values('date')
-            fig.add_trace(
+            bank_data = stress_df[stress_df['bank_type'] == bank_type].sort_values('date')
+            
+            # Calculate moving averages
+            bank_data['ma_tier1'] = bank_data['tier1_ratio'].rolling(window=3).mean()
+            bank_data['ma_ecl'] = bank_data[f'ecl_coverage_change_{period}'].rolling(window=3).mean()
+            
+            # Create dual-axis plot
+            time_fig.add_trace(
                 go.Scatter(
                     x=bank_data['date'],
-                    y=bank_data[f'ecl_coverage_change_{period}'],
-                    name=bank_type,
-                    mode='lines+markers',
-                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
-                ),
-                row=1, col=2
+                    y=bank_data['ma_tier1'],
+                    name=f"{bank_type} - Tier 1",
+                    mode='lines',
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()]),
+                    yaxis='y'
+                )
             )
+            
+            time_fig.add_trace(
+                go.Scatter(
+                    x=bank_data['date'],
+                    y=bank_data['ma_ecl'],
+                    name=f"{bank_type} - ECL",
+                    mode='lines',
+                    line=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        dash='dash'
+                    ),
+                    yaxis='y2'
+                )
+            )
+            
+        time_fig.update_layout(
+            title="Time Series of Capital Adequacy and ECL Changes",
+            xaxis_title="Date",
+            yaxis_title="Tier 1 Ratio (%)",
+            yaxis2=dict(
+                title="ECL Change (%)",
+                overlaying='y',
+                side='right'
+            ),
+            **self.layout_defaults
+        )
+        figures['time_series'] = time_fig
         
-        # Distribution histogram by bank type
+        # Figure 3: Capital Efficiency Analysis
+        efficiency_fig = go.Figure()
+        
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
-                go.Histogram(
-                    x=bank_data['tier1_ratio'],
-                    name=bank_type,
-                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
-                    opacity=0.7
-                ),
-                row=2, col=1
-            )
-        
-        # Scatter plot by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            efficiency_fig.add_trace(
                 go.Scatter(
                     x=bank_data['tier1_ratio'],
                     y=bank_data[f'ecl_coverage_change_{period}'],
@@ -857,23 +1287,73 @@ class ECLVisualizer:
                     marker=dict(
                         color=self.color_scheme[bank_type.split()[0].lower()],
                         size=10,
-                        opacity=0.7
+                        opacity=0.6
                     )
-                ),
-                row=2, col=2
+                )
             )
-        
-        # Update layout
-        fig.update_layout(
-            title_text=f"Capital Structure Analysis During {period_info['name']} by Bank Type",
-            showlegend=True,
+            
+            # Add trend line
+            z = np.polyfit(bank_data['tier1_ratio'], 
+                          bank_data[f'ecl_coverage_change_{period}'], 1)
+            p = np.poly1d(z)
+            x_trend = np.linspace(bank_data['tier1_ratio'].min(), 
+                                bank_data['tier1_ratio'].max(), 100)
+            
+            efficiency_fig.add_trace(
+                go.Scatter(
+                    x=x_trend,
+                    y=p(x_trend),
+                    mode='lines',
+                    name=f'{bank_type} Trend',
+                    line=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        dash='dash'
+                    )
+                )
+            )
+            
+        efficiency_fig.update_layout(
+            title="Capital Efficiency Analysis",
+            xaxis_title="Tier 1 Ratio (%)",
+            yaxis_title="ECL Change (%)",
             **self.layout_defaults
         )
+        figures['efficiency'] = efficiency_fig
         
-        return fig
+        # Figure 4: Risk-Return Analysis
+        risk_return_fig = go.Figure()
+        
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            
+            risk_return_fig.add_trace(
+                go.Scatter(
+                    x=bank_data['tier1_ratio'],
+                    y=bank_data['roa'],  # Return on Assets
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=abs(bank_data[f'ecl_coverage_change_{period}']) / 2,  # Size based on ECL change
+                        sizemode='diameter',
+                        sizeref=2.*max(abs(stress_df[f'ecl_coverage_change_{period}']))/(40.**2),
+                        sizemin=4
+                    )
+                )
+            )
+            
+        risk_return_fig.update_layout(
+            title="Risk-Return Profile by Capital Level",
+            xaxis_title="Tier 1 Ratio (%)",
+            yaxis_title="Return on Assets (%)",
+            **self.layout_defaults
+        )
+        figures['risk_return'] = risk_return_fig
+        
+        return figures
 
-    def create_hypothesis4_visualization(self, df: pd.DataFrame, period: str) -> go.Figure:
-        """Create visualization for ECL model accuracy hypothesis"""
+    def create_hypothesis4_visualization(self, df: pd.DataFrame, period: str) -> Dict[str, go.Figure]:
+        """Create multiple visualizations for ECL prediction accuracy"""
         period_info = self.metrics.stress_periods[period]
         
         # Filter and prepare data
@@ -884,25 +1364,18 @@ class ECLVisualizer:
         
         # Remove invalid values
         stress_df = stress_df.replace([np.inf, -np.inf], np.nan).dropna(
-            subset=['lnatres', 'predicted_ecl', 'prediction_error', 'asset']
+            subset=['lnatres', 'predicted_ecl', 'prediction_error']
         )
         
-        # Create subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=(
-                "Predicted vs Actual ECL by Bank Type",
-                "Prediction Error Distribution by Bank Type",
-                "Error by Bank Size and Type",
-                "Time Series of Prediction Error by Bank Type"
-            ),
-            vertical_spacing=0.15
-        )
+        figures = {}
         
-        # Scatter plot of predicted vs actual by bank type
+        # Figure 1: Prediction Accuracy Overview
+        accuracy_fig = go.Figure()
+        
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            accuracy_fig.add_trace(
                 go.Scatter(
                     x=bank_data['lnatres'],
                     y=bank_data['predicted_ecl'],
@@ -910,80 +1383,110 @@ class ECLVisualizer:
                     name=bank_type,
                     marker=dict(
                         color=self.color_scheme[bank_type.split()[0].lower()],
-                        size=10,
-                        opacity=0.7
+                        size=8,
+                        opacity=0.6
                     )
-                ),
-                row=1, col=1
+                )
             )
-        
-        # Add 45-degree line
+            
+        # Add perfect prediction line
         max_val = max(stress_df['lnatres'].max(), stress_df['predicted_ecl'].max())
-        fig.add_trace(
+        accuracy_fig.add_trace(
             go.Scatter(
                 x=[0, max_val],
                 y=[0, max_val],
                 mode='lines',
                 name='Perfect Prediction',
-                line=dict(dash='dash', color='black')
-            ),
-            row=1, col=1
+                line=dict(color='black', dash='dash')
+            )
         )
         
-        # Error distribution by bank type
+        accuracy_fig.update_layout(
+            title="Predicted vs Actual ECL",
+            xaxis_title="Actual ECL",
+            yaxis_title="Predicted ECL",
+            **self.layout_defaults
+        )
+        figures['accuracy'] = accuracy_fig
+        
+        # Figure 2: Error Distribution
+        error_fig = go.Figure()
+        
         for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
             bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
+            
+            error_fig.add_trace(
                 go.Histogram(
                     x=bank_data['prediction_error'],
                     name=bank_type,
                     marker_color=self.color_scheme[bank_type.split()[0].lower()],
-                    opacity=0.7
-                ),
-                row=1, col=2
+                    opacity=0.7,
+                    nbinsx=30
+                )
             )
-        
-        # Error by bank size and type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            fig.add_trace(
-                go.Scatter(
-                    x=bank_data['asset'],
-                    y=bank_data['prediction_error'],
-                    mode='markers',
-                    name=bank_type,
-                    marker=dict(
-                        color=self.color_scheme[bank_type.split()[0].lower()],
-                        size=10,
-                        opacity=0.7
-                    )
-                ),
-                row=2, col=1
-            )
-        
-        # Time series of error by bank type
-        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
-            bank_data = stress_df[stress_df['bank_type'] == bank_type]
-            bank_data = bank_data.sort_values('date')
-            fig.add_trace(
-                go.Scatter(
-                    x=bank_data['date'],
-                    y=bank_data['prediction_error'],
-                    mode='lines+markers',
-                    name=bank_type,
-                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
-                ),
-                row=2, col=2
-            )
-        
-        # Update layout
-        fig.update_layout(
-            title_text=f"ECL Model Accuracy Analysis During {period_info['name']} by Bank Type",
-            showlegend=True,
+            
+        error_fig.update_layout(
+            title="Prediction Error Distribution by Bank Type",
+            xaxis_title="Prediction Error (%)",
+            yaxis_title="Count",
+            barmode='overlay',
             **self.layout_defaults
         )
+        figures['error_distribution'] = error_fig
         
-        return fig
+        # Figure 3: Time Series of Prediction Accuracy
+        time_fig = go.Figure()
+        
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type].sort_values('date')
+            
+            # Calculate moving average of absolute error
+            bank_data['ma_error'] = bank_data['prediction_error'].abs().rolling(window=3).mean()
+            
+            time_fig.add_trace(
+                go.Scatter(
+                    x=bank_data['date'],
+                    y=bank_data['ma_error'],
+                    name=bank_type,
+                    mode='lines',
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
+                )
+            )
+            
+        time_fig.update_layout(
+            title="Prediction Error Over Time",
+            xaxis_title="Date",
+            yaxis_title="Absolute Prediction Error (%) - 3-Month Moving Average",
+            **self.layout_defaults
+        )
+        figures['time_series'] = time_fig
+        
+        # Figure 4: Feature Importance Analysis
+        importance_fig = go.Figure()
+        
+        # Get feature importance data
+        feature_importance = pd.DataFrame({
+            'feature': stress_df['top_predictors'].iloc[0].split(', '),
+            'importance': range(3, 0, -1)  # Importance score based on order
+        })
+        
+        importance_fig.add_trace(
+            go.Bar(
+                x=feature_importance['feature'],
+                y=feature_importance['importance'],
+                marker_color=self.color_scheme['primary']
+            )
+        )
+        
+        importance_fig.update_layout(
+            title="Top Predictive Features for ECL",
+            xaxis_title="Feature",
+            yaxis_title="Relative Importance",
+            **self.layout_defaults
+        )
+        figures['feature_importance'] = importance_fig
+        
+        return figures
 
 class ECLDashboard:
     def __init__(self, df: pd.DataFrame, app: dash.Dash):
@@ -991,7 +1494,7 @@ class ECLDashboard:
         self.app = app
         self.visualizer = ECLVisualizer()
         self.hypothesis_tester = HypothesisTester()
-        self.metrics = ECLMetrics()  # Add this line to initialize metrics
+        self.metrics = ECLMetrics()
         self.setup_layout()
         self.setup_callbacks()
 
@@ -1002,7 +1505,7 @@ class ECLDashboard:
                 dbc.Col([
                     html.H1("ECL Research Analysis Dashboard",
                            className="text-primary mb-4"),
-                    html.H5("Testing Expected Credit Loss Determinants",
+                    html.H5("Analysis of Expected Credit Loss Determinants",
                            className="text-muted mb-4")
                 ])
             ]),
@@ -1037,7 +1540,7 @@ class ECLDashboard:
                                      'value': 'h2'},
                                     {'label': 'H3: Capital Structure Effect', 
                                      'value': 'h3'},
-                                    {'label': 'H4: ECL Model Accuracy', 
+                                    {'label': 'H4: ECL Prediction Accuracy', 
                                      'value': 'h4'}
                                 ],
                                 value='h1',
@@ -1071,49 +1574,29 @@ class ECLDashboard:
                                     {'label': ' Regional Banks', 'value': 'regional'},
                                     {'label': ' Nebraska Banks', 'value': 'nebraska'}
                                 ],
-                                value=['national', 'regional', 'nebraska']
+                                value=['national', 'regional', 'nebraska'],
+                                className="mt-2"
                             )
                         ])
                     ], className="mb-4"),
 
-                    # Bank List Panel with Modern Styling
+                    # Bank Categories Panel
                     dbc.Card([
-                        dbc.CardHeader([
-                            html.H5("Banks by Category", className="mb-0"),
-                        ]),
+                        dbc.CardHeader("Bank Categories"),
                         dbc.CardBody([
-                            # National Banks Section
-                            html.Div([
-                                html.H6("National Systemic Banks", 
-                                       className="text-primary mb-2"),
-                                dbc.ListGroup(
-                                    id='national-bank-list',
-                                    flush=True,
-                                    className="mb-3"
-                                )
-                            ]),
-                            # Regional Banks Section
-                            html.Div([
-                                html.H6("Regional Banks", 
-                                       className="text-primary mb-2"),
-                                dbc.ListGroup(
-                                    id='regional-bank-list',
-                                    flush=True,
-                                    className="mb-3"
-                                )
-                            ]),
-                            # Nebraska Banks Section
-                            html.Div([
-                                html.H6("Nebraska Banks", 
-                                       className="text-primary mb-2"),
-                                dbc.ListGroup(
-                                    id='nebraska-bank-list',
-                                    flush=True
-                                )
+                            dbc.Tabs([
+                                dbc.Tab([
+                                    html.Div(id='national-bank-list')
+                                ], label="National", className="mt-3"),
+                                dbc.Tab([
+                                    html.Div(id='regional-bank-list')
+                                ], label="Regional", className="mt-3"),
+                                dbc.Tab([
+                                    html.Div(id='nebraska-bank-list')
+                                ], label="Nebraska", className="mt-3")
                             ])
                         ])
                     ], className="mb-4"),
-
                 ], width=3),
 
                 # Main Visualization Area
@@ -1136,11 +1619,39 @@ class ECLDashboard:
                             ])
                         ]),
                         dbc.CardBody([
-                            dcc.Loading(
-                                id="loading-1",
-                                type="default",
-                                children=[dcc.Graph(id='main-visualization')]
-                            )
+                            # Four separate plot sections
+                            dbc.Row([
+                                dbc.Col([
+                                    dcc.Loading(
+                                        id="loading-1",
+                                        type="default",
+                                        children=[dcc.Graph(id='plot-1')]
+                                    )
+                                ], width=6),
+                                dbc.Col([
+                                    dcc.Loading(
+                                        id="loading-2",
+                                        type="default",
+                                        children=[dcc.Graph(id='plot-2')]
+                                    )
+                                ], width=6)
+                            ]),
+                            dbc.Row([
+                                dbc.Col([
+                                    dcc.Loading(
+                                        id="loading-3",
+                                        type="default",
+                                        children=[dcc.Graph(id='plot-3')]
+                                    )
+                                ], width=6),
+                                dbc.Col([
+                                    dcc.Loading(
+                                        id="loading-4",
+                                        type="default",
+                                        children=[dcc.Graph(id='plot-4')]
+                                    )
+                                ], width=6)
+                            ], className="mt-4")
                         ])
                     ])
                 ], width=9)
@@ -1154,7 +1665,7 @@ class ECLDashboard:
                         dbc.CardHeader("Statistical Analysis"),
                         dbc.CardBody([
                             dcc.Loading(
-                                id="loading-2",
+                                id="loading-stats",
                                 type="default",
                                 children=[html.Div(id='statistical-results')]
                             )
@@ -1168,7 +1679,7 @@ class ECLDashboard:
                         dbc.CardHeader("Supporting Analysis"),
                         dbc.CardBody([
                             dcc.Loading(
-                                id="loading-3",
+                                id="loading-metrics",
                                 type="default",
                                 children=[html.Div(id='supporting-metrics')]
                             )
@@ -1184,13 +1695,16 @@ class ECLDashboard:
 
     def setup_callbacks(self):
         @self.app.callback(
-            [Output('main-visualization', 'figure'),
+            [Output('plot-1', 'figure'),
+             Output('plot-2', 'figure'),
+             Output('plot-3', 'figure'),
+             Output('plot-4', 'figure'),
              Output('statistical-results', 'children'),
              Output('supporting-metrics', 'children'),
              Output('hypothesis-description', 'children'),
              Output('national-bank-list', 'children'),
              Output('regional-bank-list', 'children'),
-             Output('nebraska-bank-list','children')],
+             Output('nebraska-bank-list', 'children')],
             [Input('stress-period-selector', 'value'),
              Input('hypothesis-selector', 'value'),
              Input('asset-size-filter', 'value'),
@@ -1199,80 +1713,105 @@ class ECLDashboard:
         def update_analysis(stress_period: str, hypothesis: str, 
                           asset_range: List[float], bank_types: List[str]):
             """Update all visualizations and analysis based on user selections"""
-            
+
             # Filter data based on selections
             filtered_df = self.filter_data(asset_range, bank_types)
-            
-            # Generate visualizations and results based on hypothesis
+
+            # Generate visualizations based on hypothesis
             if hypothesis == 'h1':
-                main_fig = self.visualizer.create_hypothesis1_visualization(
+                figures = self.visualizer.create_hypothesis1_visualization(
                     filtered_df, stress_period
                 )
                 results = self.hypothesis_tester.test_hypothesis_1(
                     filtered_df, stress_period
                 )
                 description = self.get_hypothesis_description('h1')
-                
+
             elif hypothesis == 'h2':
-                main_fig = self.visualizer.create_hypothesis2_visualization(
+                figures = self.visualizer.create_hypothesis2_visualization(
                     filtered_df, stress_period
                 )
                 results = self.hypothesis_tester.test_hypothesis_2(
                     filtered_df, stress_period
                 )
                 description = self.get_hypothesis_description('h2')
-                
+
             elif hypothesis == 'h3':
-                main_fig = self.visualizer.create_hypothesis3_visualization(
+                figures = self.visualizer.create_hypothesis3_visualization(
                     filtered_df, stress_period
                 )
                 results = self.hypothesis_tester.test_hypothesis_3(
                     filtered_df, stress_period
                 )
                 description = self.get_hypothesis_description('h3')
-                
+
             elif hypothesis == 'h4':
-                main_fig = self.visualizer.create_hypothesis4_visualization(
+                figures = self.visualizer.create_hypothesis4_visualization(
                     filtered_df, stress_period
                 )
                 results = self.hypothesis_tester.test_hypothesis_4(
                     filtered_df, stress_period
                 )
                 description = self.get_hypothesis_description('h4')
-                
+
             else:
-                main_fig = go.Figure()
+                figures = {
+                    'box_plot': go.Figure(),
+                    'time_series': go.Figure(),
+                    'scatter_plot': go.Figure(),
+                    'distribution': go.Figure()
+                }
                 results = {}
                 description = ""
-            
+
             stats_panel = self.create_stats_panel(results)
             supporting_metrics = self.create_supporting_metrics_panel(
                 filtered_df, stress_period, hypothesis
             )
 
-            # Generate bank lists by type
+            # Generate bank lists by type using abbreviated names
             national_banks = [
-                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
-                                className="py-2") 
-                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'National Systemic Bank']['bank'].unique())
+                dbc.ListGroupItem(
+                    self.metrics.bank_name_mapping.get(bank, bank),
+                    className="py-2"
+                ) for bank in sorted(filtered_df[
+                    filtered_df['bank_type'] == 'National Systemic Bank'
+                ]['bank'].unique())
             ]
-            national_list = national_banks if national_banks else [dbc.ListGroupItem("No national banks available")]
+            national_list = national_banks if national_banks else [
+                dbc.ListGroupItem("No national banks available")
+            ]
 
             regional_banks = [
-                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
-                                className="py-2") 
-                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'Regional Bank']['bank'].unique())
+                dbc.ListGroupItem(
+                    self.metrics.bank_name_mapping.get(bank, bank),
+                    className="py-2"
+                ) for bank in sorted(filtered_df[
+                    filtered_df['bank_type'] == 'Regional Bank'
+                ]['bank'].unique())
             ]
-            regional_list = regional_banks if regional_banks else [dbc.ListGroupItem("No regional banks available")]
+            regional_list = regional_banks if regional_banks else [
+                dbc.ListGroupItem("No regional banks available")
+            ]
 
             nebraska_banks = [
-                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
-                                className="py-2") 
-                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'Nebraska Bank']['bank'].unique())
+                dbc.ListGroupItem(
+                    self.metrics.bank_name_mapping.get(bank, bank),
+                    className="py-2"
+                ) for bank in sorted(filtered_df[
+                    filtered_df['bank_type'] == 'Nebraska Bank'
+                ]['bank'].unique())
             ]
-            nebraska_list = nebraska_banks if nebraska_banks else [dbc.ListGroupItem("No Nebraska banks available")]
+            nebraska_list = nebraska_banks if nebraska_banks else [
+                dbc.ListGroupItem("No Nebraska banks available")
+            ]
 
-            return main_fig, stats_panel, supporting_metrics, description, national_list, regional_list, nebraska_list
+            return (
+                figures['box_plot'], figures['time_series'], 
+                figures['scatter_plot'], figures['distribution'],
+                stats_panel, supporting_metrics, description,
+                national_list, regional_list, nebraska_list
+            )
 
         @self.app.callback(
             Output("download-data", "data"),
@@ -1324,94 +1863,171 @@ class ECLDashboard:
         return df
 
     def get_hypothesis_description(self, hypothesis: str) -> str:
-        """Return description of selected hypothesis"""
+        """Return detailed description of selected hypothesis"""
         descriptions = {
-            'h1': "Banks with high CRE concentration (top quartile) experience at least 20% larger ECL increases during stress periods compared to those in the bottom quartile.",
-            'h2': "Banks with above-median consumer loan ratios show greater ECL sensitivity during stress periods.",
-            'h3': "Banks with above-median Tier 1 capital ratios experience at least 15% smaller ECL increases during stress periods.",
-            'h4': "A standardized model can estimate ECL within 10% of actual FDIC-reported figures."
+            'h1': """
+                Hypothesis 1: CRE Concentration Impact
+                Banks with high commercial real estate (CRE) concentration experience significantly larger ECL increases 
+                during stress periods. We expect at least 20% larger ECL increases in the top quartile compared to the 
+                bottom quartile of CRE concentration. This relationship may vary by bank type and size.
+            """,
+            'h2': """
+                Hypothesis 2: Consumer Loan Sensitivity
+                Banks with higher consumer loan concentrations show greater ECL sensitivity during stress periods,
+                particularly during economic downturns affecting household income and employment. The analysis 
+                considers different bank types and their varying exposure to consumer credit risk.
+            """,
+            'h3': """
+                Hypothesis 3: Capital Structure Effect
+                Banks with higher Tier 1 capital ratios experience smaller ECL increases during stress periods,
+                suggesting better risk absorption capacity. We expect at least 15% smaller ECL increases for 
+                well-capitalized banks, with variations across different bank types and sizes.
+            """,
+            'h4': """
+                Hypothesis 4: ECL Prediction Accuracy
+                Our machine learning model can predict ECL levels within 10% accuracy using key financial metrics
+                and stress indicators. The model's performance is evaluated across different bank types and stress
+                periods, with particular attention to prediction reliability during crisis periods.
+            """
         }
-        return descriptions.get(hypothesis, "")
+        return html.Div([
+            html.P(descriptions.get(hypothesis, ""), className="mb-0")
+        ])
 
     def create_supporting_metrics_panel(self, df: pd.DataFrame, 
                                      period: str, hypothesis: str) -> html.Div:
-        """Create supporting metrics visualization based on hypothesis"""
+        """Create enhanced supporting metrics visualization"""
         metrics = {}
         
-        # Add bank type breakdown
+        # Add bank type distribution with percentage
+        total_banks = len(df['cert'].unique())
         bank_type_counts = df['bank_type'].value_counts()
         metrics['Bank Type Distribution'] = {
-            'National Systemic Banks': f"{bank_type_counts.get('National Systemic Bank', 0)}",
-            'Regional Banks': f"{bank_type_counts.get('Regional Bank', 0)}",
-            'Nebraska Banks': f"{bank_type_counts.get('Nebraska Bank', 0)}"
+            f"{k} ({v/total_banks*100:.1f}%)": v 
+            for k, v in bank_type_counts.items()
         }
         
+        # Add size distribution
+        asset_bins = [0, 1e9, 10e9, 100e9, float('inf')]  # 1B, 10B, 100B+
+        asset_labels = ['Small (<$1B)', 'Medium ($1-10B)', 'Large ($10-100B)', 'Very Large (>$100B)']
+        df['asset_size_class'] = pd.cut(df['asset'], 
+                                      bins=asset_bins,
+                                      labels=asset_labels)
+        size_counts = df['asset_size_class'].value_counts()
+        metrics['Asset Size Distribution'] = {
+            k: v for k, v in size_counts.items()
+        }
+        
+        # Hypothesis-specific metrics
         if hypothesis == 'h1':
-            metrics['Analysis Metrics'] = {
-                'Total Banks': len(df['cert'].unique()),
+            metrics['CRE Analysis'] = {
                 'Median CRE Concentration': f"{df['cre_concentration'].median():.1f}%",
                 'Mean ECL Change': f"{df[f'ecl_coverage_change_{period}'].mean():.1f}%",
-                'Correlation': f"{df['cre_concentration'].corr(df[f'ecl_coverage_change_{period}']):.3f}"
+                'CRE-ECL Correlation': f"{df['cre_concentration'].corr(df[f'ecl_coverage_change_{period}']):.3f}",
+                'High CRE Count': f"{len(df[df['cre_concentration'] > df['cre_concentration'].median()])} banks"
             }
         elif hypothesis == 'h2':
-            median_consumer_ratio = df['consumer_loan_ratio'].median()
-            metrics['Analysis Metrics'] = {
-                'High Consumer Banks': len(df[df['consumer_loan_ratio'] > median_consumer_ratio]['cert'].unique()),
-                'Low Consumer Banks': len(df[df['consumer_loan_ratio'] <= median_consumer_ratio]['cert'].unique()),
-                'Median Consumer Ratio': f"{median_consumer_ratio:.1f}%"
+            consumer_median = df['consumer_loan_ratio'].median()
+            metrics['Consumer Loan Analysis'] = {
+                'Median Consumer Ratio': f"{consumer_median:.1f}%",
+                'High Consumer Banks': f"{len(df[df['consumer_loan_ratio'] > consumer_median])} banks",
+                'Low Consumer Banks': f"{len(df[df['consumer_loan_ratio'] <= consumer_median])} banks",
+                'Consumer-ECL Correlation': f"{df['consumer_loan_ratio'].corr(df[f'ecl_coverage_change_{period}']):.3f}"
             }
         elif hypothesis == 'h3':
-            metrics['Analysis Metrics'] = {
-                'Median Tier 1 Ratio': f"{df['tier1_ratio'].median():.1f}%",
+            tier1_median = df['tier1_ratio'].median()
+            metrics['Capital Analysis'] = {
+                'Median Tier 1 Ratio': f"{tier1_median:.1f}%",
                 'Mean ECL Change': f"{df[f'ecl_coverage_change_{period}'].mean():.1f}%",
-                'Capital-ECL Correlation': f"{df['tier1_ratio'].corr(df[f'ecl_coverage_change_{period}']):.3f}"
+                'Capital-ECL Correlation': f"{df['tier1_ratio'].corr(df[f'ecl_coverage_change_{period}']):.3f}",
+                'Well-Capitalized Banks': f"{len(df[df['tier1_ratio'] > tier1_median])} banks"
             }
         elif hypothesis == 'h4':
-            # Remove invalid values
-            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['prediction_error'])
-            metrics['Analysis Metrics'] = {
+            metrics['Model Performance'] = {
                 'Mean Prediction Error': f"{df['prediction_error'].mean():.1f}%",
                 'Median Prediction Error': f"{df['prediction_error'].median():.1f}%",
-                'Error Std Dev': f"{df['prediction_error'].std():.1f}%"
+                'Error Std Dev': f"{df['prediction_error'].std():.1f}%",
+                'Within 10% Accuracy': f"{(abs(df['prediction_error']) <= 10).mean()*100:.1f}%"
             }
             
-        # Create formatted output
+        # Create formatted output with enhanced styling
         content = []
         for section_name, section_metrics in metrics.items():
             content.extend([
-                html.H6(section_name),
-                html.Hr(),
-                *[html.P([html.Strong(f"{k}: "), v]) for k, v in section_metrics.items()],
-                html.Br()
+                html.H6(section_name, className="text-primary"),
+                html.Hr(className="mt-2 mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardBody([
+                                html.H6(k, className="card-subtitle mb-2 text-muted"),
+                                html.P(str(v), className="card-text h5")
+                            ])
+                        ], className="mb-3")
+                    ], width=6)
+                    for k, v in section_metrics.items()
+                ], className="g-2")
             ])
             
         return html.Div(content)
 
     def create_stats_panel(self, results: Dict) -> html.Div:
-        """Create statistical results panel"""
+        """Create enhanced statistical results panel"""
         if not results:
             return html.Div("No results available.")
         
-        content = [
-            html.H6("Statistical Results"),
-            html.Hr()
-        ]
+        if 'error' in results:
+            return html.Div([
+                html.H6("Error in Analysis", className="text-danger"),
+                html.P(results['error'])
+            ])
         
-        # Format results by bank type if available
+        content = [html.H6("Statistical Analysis Results", className="text-primary")]
+        
+        # Format results with enhanced styling
         for key, value in results.items():
             if isinstance(value, dict):
-                content.append(html.P([html.Strong(f"{key}:")]))
-                for sub_key, sub_value in value.items():
-                    content.append(html.P(f" - {sub_key}: {sub_value}"))
+                content.append(html.H6(key, className="mt-3"))
+                content.append(html.Hr(className="mt-2 mb-3"))
+                
+                # Create cards for nested metrics
+                content.append(dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardBody([
+                                html.H6(sub_key, className="card-subtitle mb-2 text-muted"),
+                                html.P(
+                                    f"{sub_value:.3f}" if isinstance(sub_value, float)
+                                    else str(sub_value),
+                                    className="card-text h5"
+                                )
+                            ])
+                        ], className="mb-3")
+                    ], width=6)
+                    for sub_key, sub_value in value.items()
+                ], className="g-2"))
             else:
-                content.append(html.P([html.Strong(f"{key}: "), str(value)]))
+                content.append(
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6(key, className="card-subtitle mb-2 text-muted"),
+                            html.P(
+                                f"{value:.3f}" if isinstance(value, float)
+                                else str(value),
+                                className="card-text h5"
+                            )
+                        ])
+                    ], className="mb-3")
+                )
         
         return html.Div(content)
 
     def prepare_download_data(self, df: pd.DataFrame, stress_period: str, hypothesis: str) -> pd.DataFrame:
-        """Prepare DataFrame for download based on current analysis"""
-        # Select relevant columns based on hypothesis
-        columns = ['cert', 'date', 'bank_type', 'bank']
+        """Prepare comprehensive DataFrame for download"""
+        # Basic columns always included
+        columns = ['cert', 'date', 'bank_type', 'bank', 'abbreviated_name', 'asset']
+        
+        # Add hypothesis-specific columns
         if hypothesis == 'h1':
             columns.extend(['cre_concentration', f'ecl_coverage_change_{stress_period}'])
         elif hypothesis == 'h2':
@@ -1419,161 +2035,58 @@ class ECLDashboard:
         elif hypothesis == 'h3':
             columns.extend(['tier1_ratio', f'ecl_coverage_change_{stress_period}'])
         elif hypothesis == 'h4':
-            columns.extend(['lnatres', 'predicted_ecl', 'prediction_error'])
+            columns.extend([
+                'lnatres', 'predicted_ecl', 'prediction_error',
+                'model_r2_train', 'model_r2_test', 'top_predictors'
+            ])
         
-        # Map bank names to abbreviated versions
+        # Create download DataFrame
         download_df = df[columns].copy()
-        download_df['bank'] = download_df['bank'].map(
-            self.metrics.bank_name_mapping
-        ).fillna(download_df['bank'])
+        
+        # Add bank type and size classification
+        download_df['asset_size_class'] = pd.qcut(
+            download_df['asset'], 
+            q=4, 
+            labels=['Small', 'Medium', 'Large', 'Very Large']
+        )
+        
+        # Format date column
+        download_df['date'] = download_df['date'].dt.strftime('%Y-%m-%d')
+        
+        # Sort by bank and date
+        download_df = download_df.sort_values(['bank', 'date'])
         
         return download_df
 
-def get_data():
-    """Initialize data extraction and processing"""
-    processor = ECLDataProcessor()
-    metrics = ECLMetrics()
-
-    # Define bank details including CERT numbers
-    bank_details = [
-        # National Systemic Banks
-        {"cert": "3511", "name": "Wells Fargo Bank, National Association"},
-        {"cert": "3510", "name": "Bank of America, National Association"},
-        {"cert": "7213", "name": "Citibank, National Association"},
-        {"cert": "628", "name": "JPMorgan Chase Bank, National Association"},
-        {"cert": "6548", "name": "U.S. Bank National Association"},
-        {"cert": "6384", "name": "PNC Bank, National Association"},
-        {"cert": "9846", "name": "Truist Bank"},
-        {"cert": "33124", "name": "Goldman Sachs Bank USA"},
-        {"cert": "32992", "name": "Morgan Stanley Bank, National Association"},
-        {"cert": "18409", "name": "TD Bank, National Association"},
-        {"cert": "4297", "name": "Capital One, National Association"},
-        {"cert": "6672", "name": "Fifth Third Bank, National Association"},
-        {"cert": "57957", "name": "Citizens Bank, National Association"},
-        {"cert": "57803", "name": "Ally Bank"},
-        {"cert": "17534", "name": "KeyBank National Association"},
-
-        # Regional Banks
-        {"cert": "5296", "name": "Associated Bank, National Association"},
-        {"cert": "4214", "name": "BOKF, National Association"},
-        {"cert": "58979", "name": "BankUnited, National Association"},
-        {"cert": "20234", "name": "City National Bank of Florida"},
-        {"cert": "34775", "name": "EverBank, National Association"},
-        {"cert": "7888", "name": "First National Bank of Pennsylvania"},
-        {"cert": "3832", "name": "Old National Bank"},
-        {"cert": "26881", "name": "SoFi Bank, National Association"},
-        {"cert": "4988", "name": "Trustmark National Bank"},
-        {"cert": "18221", "name": "Webster Bank, National Association"},
-        {"cert": "33935", "name": "Wintrust Bank, National Association"},
-        {"cert": "2270", "name": "Zions Bancorporation, N.A."},
-        {"cert": "7551", "name": "Fulton Bank, National Association"},
-        {"cert": "33555", "name": "SouthState Bank, National Association"},
-        {"cert": "8273", "name": "UMB Bank, National Association"},
-        {"cert": "9396", "name": "Valley National Bank"},
-        {"cert": "12923", "name": "Bremer Bank, National Association"},
-        {"cert": "639", "name": "The Bank of New York Mellon"},
-
-        # Nebraska Banks
-        {"cert": "10643", "name": "Dundee Bank"},
-        {"cert": "19300", "name": "AMERICAN NATIONAL BANK"},
-        {"cert": "20488", "name": "FIVE POINTS BANK"},
-        {"cert": "5415", "name": "SECURITY FIRST BANK"},
-        {"cert": "19213", "name": "SECURITY NATIONAL BANK OF OMAHA"},
-        {"cert": "15545", "name": "FRONTIER BANK"},
-        {"cert": "19850", "name": "WEST GATE BANK"},
-        {"cert": "34363", "name": "CORE BANK"},
-        {"cert": "13868", "name": "FIRST STATE BANK NEBRASKA"},
-        {"cert": "58727", "name": "ACCESS BANK"},
-        {"cert": "14264", "name": "CORNHUSKER BANK"},
-        {"cert": "33450", "name": "ARBOR BANK"},
-        {"cert": "12241", "name": "WASHINGTON COUNTY BANK"},
-        {"cert": "33380", "name": "ENTERPRISE BANK"},
-        {"cert": "12493", "name": "PREMIER BANK NATIONAL ASSOCIATION"},
-        {"cert": "19742", "name": "FIRST WESTROADS BANK, INC."}
-    ]
-
-    start_date = '20080101'
-    end_date = '20240630'
-
-    # Process data for each bank
-    all_data = []
-    for bank in bank_details:
-        params = {
-            "filters": f"CERT:{bank['cert']} AND REPDTE:[{start_date} TO {end_date}]",
-            "fields": (
-                "CERT,REPDTE,ASSET,DEP,LNLSGR,LNLSNET,SC,LNRE,LNCI,LNAG,LNCRCD,LNCONOTH,"
-                "LNATRES,P3ASSET,P9ASSET,RBCT1J,DRLNLS,CRLNLS,NETINC,ERNASTR,NPERFV,"
-                "P3ASSETR,P9ASSETR,NIMY,NTLNLSR,LNATRESR,NCLNLSR,ROA,ROE,RBC1AAJ,"
-                "RBCT2,RBCRWAJ,LNLSDEPR,LNLSNTV,EEFFR,LNRESNCR,ELNANTR,IDERNCVR,NTLNLSQ,"
-                "LNRECONS,LNRENRES,LNRENROW,LNRENROT,LNRERES,LNREMULT,LNREAG,LNRECNFM,"
-                "LNRECNOT,LNCOMRE,CT1BADJ,EQ,EQPP"
-            ),
-            "limit": 10000
-        }
-
-        try:
-            response = requests.get(
-                f"{BASE_URL}/financials", 
-                params=params, 
-                headers={"Accept": "application/json"}, 
-                verify=False
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if 'data' in data:
-                bank_data = [
-                    {**item['data'], 
-                     'bank': bank['name'], 
-                     'abbreviated_name': metrics.bank_name_mapping.get(bank['name'], bank['name'])} 
-                    for item in data['data'] 
-                    if isinstance(item, dict) and 'data' in item
-                ]
-                all_data.extend(bank_data)
-        except Exception as e:
-            print(f"Error processing bank {bank['name']}: {str(e)}")
-            continue
-
-    if not all_data:
-        print("No data retrieved.")
-        return pd.DataFrame()
-
-    df = processor.process_raw_data(all_data)
-
-    if df.empty:
-        print("Dataframe is empty.")
-        return pd.DataFrame()
-
-    df = processor.calculate_ecl_metrics(df)
-    df = processor.calculate_stress_period_changes(df)
-    df = processor.calculate_predicted_ecl_and_error(df)
-
-    return df
-
-# Disable SSL warning for FDIC API
+# Initialize warnings and data processing
 warnings.filterwarnings('ignore', message='.*Unverified HTTPS.*')
 
-# Initialize data extraction and processing
-processor = ECLDataProcessor()
-
-# Get processed data
-df = get_data()
-
-# Create Dash app with modern theme
-app = dash.Dash(
-    __name__, 
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
-    meta_tags=[
-        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
-    ]
-)
-server = app.server
-
-# Initialize dashboard
-if not df.empty:
-    dashboard = ECLDashboard(df, app)
-else:
-    print("Dataframe is empty. The dashboard will not be initialized.")
+def main():
+    # Initialize data extraction and processing
+    processor = ECLDataProcessor()
+    
+    # Get processed data
+    df = get_data()
+    
+    # Create Dash app with modern theme
+    app = dash.Dash(
+        __name__, 
+        external_stylesheets=[dbc.themes.BOOTSTRAP],
+        meta_tags=[
+            {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+        ]
+    )
+    server = app.server
+    
+    # Initialize dashboard
+    if not df.empty:
+        dashboard = ECLDashboard(df, app)
+        return app
+    else:
+        print("Error: Unable to initialize dashboard due to empty dataset.")
+        return None
 
 if __name__ == "__main__":
-    app.run_server(debug=False)
+    app = main()
+    if app:
+        app.run_server(debug=False)
