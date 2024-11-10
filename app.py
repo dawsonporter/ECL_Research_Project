@@ -33,6 +33,7 @@ class ECLMetrics:
                 'LNCONOTH', # Consumer Loans
                 'LNRERES',  # Residential Real Estate Loans
                 'LNREMULT', # Multifamily Loans
+                'LNREAG',   # Agricultural Real Estate Loans
                 'LNATRES'   # Allowance for Credit Loss
             ],
             'capital_metrics': [
@@ -72,6 +73,114 @@ class ECLMetrics:
             'h4': ['lnatres', 'lnlsgr', 'netinc']
         }
 
+        # Define bank groups and mappings
+        self.national_banks = [
+            "Wells Fargo Bank, National Association",
+            "Bank of America, National Association",
+            "Citibank, National Association",
+            "JPMorgan Chase Bank, National Association",
+            "U.S. Bank National Association",
+            "PNC Bank, National Association",
+            "Truist Bank",
+            "Goldman Sachs Bank USA",
+            "Morgan Stanley Bank, National Association",
+            "TD Bank, National Association",
+            "Capital One, National Association",
+            "Fifth Third Bank, National Association",
+            "Citizens Bank, National Association",
+            "Ally Bank",
+            "KeyBank National Association"
+        ]
+
+        self.regional_banks = [
+            "Associated Bank, National Association",
+            "BOKF, National Association",
+            "BankUnited, National Association",
+            "City National Bank of Florida",
+            "EverBank, National Association",
+            "First National Bank of Pennsylvania",
+            "Old National Bank",
+            "SoFi Bank, National Association",
+            "Trustmark National Bank",
+            "Webster Bank, National Association",
+            "Wintrust Bank, National Association",
+            "Zions Bancorporation, N.A.",
+            "Fulton Bank, National Association",
+            "SouthState Bank, National Association",
+            "UMB Bank, National Association",
+            "Valley National Bank",
+            "Bremer Bank, National Association",
+            "The Bank of New York Mellon"
+        ]
+
+        self.nebraska_banks = [
+            "Dundee Bank",
+            "AMERICAN NATIONAL BANK",
+            "FIVE POINTS BANK",
+            "SECURITY FIRST BANK",
+            "SECURITY NATIONAL BANK OF OMAHA",
+            "FRONTIER BANK",
+            "WEST GATE BANK",
+            "CORE BANK",
+            "FIRST STATE BANK NEBRASKA",
+            "ACCESS BANK",
+            "CORNHUSKER BANK",
+            "ARBOR BANK",
+            "WASHINGTON COUNTY BANK",
+            "ENTERPRISE BANK",
+            "PREMIER BANK NATIONAL ASSOCIATION",
+            "FIRST WESTROADS BANK, INC."
+        ]
+
+        self.bank_name_mapping = {
+            "First National Bank of Omaha": "FNBO",
+            "Associated Bank, National Association": "Associated Bank",
+            "BOKF, National Association": "BOKF",
+            "BankUnited, National Association": "BankUnited",
+            "City National Bank of Florida": "City National Bank of Florida",
+            "EverBank, National Association": "EverBank",
+            "First National Bank of Pennsylvania": "First National Bank of PA",
+            "Old National Bank": "Old National Bank",
+            "SoFi Bank, National Association": "SoFi Bank",
+            "Trustmark National Bank": "Trustmark Bank",
+            "Webster Bank, National Association": "Webster Bank",
+            "Wintrust Bank, National Association": "Wintrust Bank",
+            "Zions Bancorporation, N.A.": "Zions Bank",
+            "Capital One, National Association": "Capital One",
+            "Discover Bank": "Discover Bank",
+            "Comenity Bank": "Comenity Bank",
+            "Synchrony Bank": "Synchrony Bank",
+            "Wells Fargo Bank, National Association": "Wells Fargo",
+            "U.S. Bank National Association": "U.S. Bank",
+            "Fulton Bank, National Association": "Fulton Bank",
+            "SouthState Bank, National Association": "SouthState Bank",
+            "UMB Bank, National Association": "UMB Bank",
+            "Valley National Bank": "Valley National Bank",
+            "Bremer Bank, National Association": "Bremer Bank",
+            "The Bank of New York Mellon": "BNY Mellon",
+            "Commerce Bank": "Commerce Bank",
+            "Frost Bank": "Frost Bank",
+            "FirstBank": "FirstBank",
+            "Pinnacle Bank": "Pinnacle Bank",
+            "Dundee Bank": "Dundee Bank",
+            "American National Bank": "American National",
+            "Five Points Bank": "Five Points Bank",
+            "Security First Bank": "Security First Bank",
+            "Security National Bank of Omaha": "Security National",
+            "Frontier Bank": "Frontier Bank",
+            "West Gate Bank": "West Gate Bank",
+            "Core Bank": "Core Bank",
+            "First State Bank Nebraska": "First State Bank",
+            "Access Bank": "Access Bank",
+            "Cornhusker Bank": "Cornhusker Bank",
+            "Arbor Bank": "Arbor Bank",
+            "Washington County Bank": "Washington County",
+            "Enterprise Bank": "Enterprise Bank",
+            "Premier Bank National Association": "Premier Bank",
+            "First Westroads Bank, Inc.": "First Westroads"
+        }
+
+
 class ECLDataProcessor:
     def __init__(self):
         self.metrics = ECLMetrics()
@@ -97,7 +206,21 @@ class ECLDataProcessor:
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        # Add bank type classification
+        df['bank_type'] = df['bank'].apply(self.classify_bank_type)
+        
         return df
+
+    def classify_bank_type(self, bank_name: str) -> str:
+        """Classify banks into their respective groups"""
+        if bank_name in self.metrics.national_banks:
+            return 'National Systemic Bank'
+        elif bank_name in self.metrics.regional_banks:
+            return 'Regional Bank'
+        elif bank_name in self.metrics.nebraska_banks:
+            return 'Nebraska Bank'
+        else:
+            return 'Other'
 
     def calculate_ecl_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate core ECL metrics"""
@@ -413,7 +536,7 @@ class HypothesisTester:
         except Exception as e:
             print(f"Error testing hypothesis 4: {str(e)}")
             return {}
-
+        
 class ECLVisualizer:
     def __init__(self):
         self.metrics = ECLMetrics()
@@ -423,7 +546,10 @@ class ECLVisualizer:
             'warning': '#d62728',
             'success': '#2ca02c',
             'background': '#ffffff',
-            'grid': '#e6e6e6'
+            'grid': '#e6e6e6',
+            'national': '#003f5c',
+            'regional': '#58508d',
+            'nebraska': '#bc5090'
         }
         self.layout_defaults = dict(
             plot_bgcolor=self.color_scheme['background'],
@@ -459,70 +585,76 @@ class ECLVisualizer:
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
-                "ECL Changes by CRE Concentration Quartile",
+                "ECL Changes by CRE Concentration Quartile and Bank Type",
                 "Time Series of ECL Changes",
-                "CRE Concentration Distribution",
-                "ECL vs CRE Concentration Scatter"
+                "CRE Concentration Distribution by Bank Type",
+                "ECL vs CRE Concentration by Bank Type"
             ),
             vertical_spacing=0.15
         )
         
-        # Box plot of ECL changes by quartile
-        fig.add_trace(
-            go.Box(
-                x=stress_df['cre_quartile'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                name='ECL Changes',
-                marker_color=self.color_scheme['primary']
-            ),
-            row=1, col=1
-        )
+        # Box plot of ECL changes by quartile and bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Box(
+                    x=bank_data['cre_quartile'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()]
+                ),
+                row=1, col=1
+            )
         
-        # Time series by quartile
-        for quartile in ['Q1', 'Q4']:
-            quartile_data = stress_df[stress_df['cre_quartile'] == quartile]
-            quartile_data = quartile_data.sort_values('date')
+        # Time series by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            bank_data = bank_data.sort_values('date')
             fig.add_trace(
                 go.Scatter(
-                    x=quartile_data['date'],
-                    y=quartile_data[f'ecl_coverage_change_{period}'],
-                    name=f'Quartile {quartile}',
-                    mode='lines+markers'
+                    x=bank_data['date'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    mode='lines+markers',
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
                 ),
                 row=1, col=2
             )
         
-        # Distribution histogram
-        fig.add_trace(
-            go.Histogram(
-                x=stress_df['cre_concentration'],
-                nbinsx=30,
-                name='Distribution',
-                marker_color=self.color_scheme['secondary']
-            ),
-            row=2, col=1
-        )
-        
-        # Scatter plot
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['cre_concentration'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                mode='markers',
-                marker=dict(
-                    color=stress_df['tier1_ratio'],
-                    colorscale='Viridis',
-                    showscale=True,
-                    colorbar=dict(title="Tier 1 Ratio")
+        # Distribution histogram by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Histogram(
+                    x=bank_data['cre_concentration'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                    opacity=0.7
                 ),
-                name='Banks'
-            ),
-            row=2, col=2
-        )
+                row=2, col=1
+            )
+        
+        # Scatter plot by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['cre_concentration'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=10,
+                        opacity=0.7
+                    )
+                ),
+                row=2, col=2
+            )
         
         # Update layout
         fig.update_layout(
-            title_text=f"CRE Concentration Analysis During {period_info['name']}",
+            title_text=f"CRE Concentration Analysis During {period_info['name']} by Bank Type",
             showlegend=True,
             **self.layout_defaults
         )
@@ -562,76 +694,82 @@ class ECLVisualizer:
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
-                "ECL Changes by Consumer Loan Concentration",
-                "Time Series of ECL Changes",
-                "Consumer Loan Ratio Distribution",
-                "ECL Change vs Consumer Loan Ratio"
+                "ECL Changes by Consumer Loan Concentration and Bank Type",
+                "Time Series of ECL Changes by Bank Type",
+                "Consumer Loan Ratio Distribution by Bank Type",
+                "ECL Change vs Consumer Loan Ratio by Bank Type"
             ),
             vertical_spacing=0.15
         )
         
-        # Box plot
-        fig.add_trace(
-            go.Box(
-                x=stress_df['consumer_group'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                name='ECL Changes',
-                marker_color=self.color_scheme['primary']
-            ),
-            row=1, col=1
-        )
+        # Box plot by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Box(
+                    x=bank_data['consumer_group'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()]
+                ),
+                row=1, col=1
+            )
         
-        # Time series by group
-        for group in ['High Consumer', 'Low Consumer']:
-            group_data = stress_df[stress_df['consumer_group'] == group]
-            group_data = group_data.sort_values('date')
+        # Time series by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            bank_data = bank_data.sort_values('date')
             fig.add_trace(
                 go.Scatter(
-                    x=group_data['date'],
-                    y=group_data[f'ecl_coverage_change_{period}'],
-                    name=group,
-                    mode='lines+markers'
+                    x=bank_data['date'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    mode='lines+markers',
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
                 ),
                 row=1, col=2
             )
         
-        # Distribution histogram
-        fig.add_trace(
-            go.Histogram(
-                x=stress_df['consumer_loan_ratio'],
-                nbinsx=30,
-                name='Distribution',
-                marker_color=self.color_scheme['secondary']
-            ),
-            row=2, col=1
-        )
-        
-        # Scatter plot
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['consumer_loan_ratio'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                mode='markers',
-                marker=dict(
-                    color=stress_df['tier1_ratio'],
-                    colorscale='Viridis',
-                    showscale=True,
-                    colorbar=dict(title="Tier 1 Ratio")
+        # Distribution histogram by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Histogram(
+                    x=bank_data['consumer_loan_ratio'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                    opacity=0.7
                 ),
-                name='Banks'
-            ),
-            row=2, col=2
-        )
+                row=2, col=1
+            )
+        
+        # Scatter plot by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['consumer_loan_ratio'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=10,
+                        opacity=0.7
+                    )
+                ),
+                row=2, col=2
+            )
         
         # Update layout
         fig.update_layout(
-            title_text=f"Consumer Loan Analysis During {period_info['name']}",
+            title_text=f"Consumer Loan Analysis During {period_info['name']} by Bank Type",
             showlegend=True,
             **self.layout_defaults
         )
         
         return fig
-
+    
     def create_hypothesis3_visualization(self, df: pd.DataFrame, period: str) -> go.Figure:
         """Create visualization for capital structure hypothesis"""
         period_info = self.metrics.stress_periods[period]
@@ -658,70 +796,76 @@ class ECLVisualizer:
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
-                "ECL Changes by Capital Level",
-                "Time Series of ECL Changes",
-                "Tier 1 Ratio Distribution",
-                "ECL vs Tier 1 Ratio"
+                "ECL Changes by Capital Level and Bank Type",
+                "Time Series of ECL Changes by Bank Type",
+                "Tier 1 Ratio Distribution by Bank Type",
+                "ECL vs Tier 1 Ratio by Bank Type"
             ),
             vertical_spacing=0.15
         )
         
-        # Box plot
-        fig.add_trace(
-            go.Box(
-                x=stress_df['capital_group'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                name='ECL Changes',
-                marker_color=self.color_scheme['primary']
-            ),
-            row=1, col=1
-        )
+        # Box plot by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Box(
+                    x=bank_data['capital_group'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()]
+                ),
+                row=1, col=1
+            )
         
-        # Time series
-        for group in ['High Capital', 'Low Capital']:
-            group_data = stress_df[stress_df['capital_group'] == group]
-            group_data = group_data.sort_values('date')
+        # Time series by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            bank_data = bank_data.sort_values('date')
             fig.add_trace(
                 go.Scatter(
-                    x=group_data['date'],
-                    y=group_data[f'ecl_coverage_change_{period}'],
-                    name=group,
-                    mode='lines+markers'
+                    x=bank_data['date'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    name=bank_type,
+                    mode='lines+markers',
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
                 ),
                 row=1, col=2
             )
         
-        # Distribution histogram
-        fig.add_trace(
-            go.Histogram(
-                x=stress_df['tier1_ratio'],
-                nbinsx=30,
-                name='Distribution',
-                marker_color=self.color_scheme['secondary']
-            ),
-            row=2, col=1
-        )
-        
-        # Scatter plot
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['tier1_ratio'],
-                y=stress_df[f'ecl_coverage_change_{period}'],
-                mode='markers',
-                marker=dict(
-                    color=stress_df['consumer_loan_ratio'],
-                    colorscale='Viridis',
-                    showscale=True,
-                    colorbar=dict(title="Consumer Loan Ratio")
+        # Distribution histogram by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Histogram(
+                    x=bank_data['tier1_ratio'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                    opacity=0.7
                 ),
-                name='Banks'
-            ),
-            row=2, col=2
-        )
+                row=2, col=1
+            )
+        
+        # Scatter plot by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['tier1_ratio'],
+                    y=bank_data[f'ecl_coverage_change_{period}'],
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=10,
+                        opacity=0.7
+                    )
+                ),
+                row=2, col=2
+            )
         
         # Update layout
         fig.update_layout(
-            title_text=f"Capital Structure Analysis During {period_info['name']}",
+            title_text=f"Capital Structure Analysis During {period_info['name']} by Bank Type",
             showlegend=True,
             **self.layout_defaults
         )
@@ -747,24 +891,31 @@ class ECLVisualizer:
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
-                "Predicted vs Actual ECL",
-                "Prediction Error Distribution",
-                "Error by Bank Size",
-                "Time Series of Prediction Error"
+                "Predicted vs Actual ECL by Bank Type",
+                "Prediction Error Distribution by Bank Type",
+                "Error by Bank Size and Type",
+                "Time Series of Prediction Error by Bank Type"
             ),
             vertical_spacing=0.15
         )
         
-        # Scatter plot of predicted vs actual
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['lnatres'],
-                y=stress_df['predicted_ecl'],
-                mode='markers',
-                name='Predictions'
-            ),
-            row=1, col=1
-        )
+        # Scatter plot of predicted vs actual by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['lnatres'],
+                    y=bank_data['predicted_ecl'],
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=10,
+                        opacity=0.7
+                    )
+                ),
+                row=1, col=1
+            )
         
         # Add 45-degree line
         max_val = max(stress_df['lnatres'].max(), stress_df['predicted_ecl'].max())
@@ -774,46 +925,60 @@ class ECLVisualizer:
                 y=[0, max_val],
                 mode='lines',
                 name='Perfect Prediction',
-                line=dict(dash='dash')
+                line=dict(dash='dash', color='black')
             ),
             row=1, col=1
         )
         
-        # Error distribution
-        fig.add_trace(
-            go.Histogram(
-                x=stress_df['prediction_error'],
-                nbinsx=30,
-                name='Error Distribution'
-            ),
-            row=1, col=2
-        )
+        # Error distribution by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Histogram(
+                    x=bank_data['prediction_error'],
+                    name=bank_type,
+                    marker_color=self.color_scheme[bank_type.split()[0].lower()],
+                    opacity=0.7
+                ),
+                row=1, col=2
+            )
         
-        # Error by bank size
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['asset'],
-                y=stress_df['prediction_error'],
-                mode='markers',
-                name='Error by Size'
-            ),
-            row=2, col=1
-        )
+        # Error by bank size and type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['asset'],
+                    y=bank_data['prediction_error'],
+                    mode='markers',
+                    name=bank_type,
+                    marker=dict(
+                        color=self.color_scheme[bank_type.split()[0].lower()],
+                        size=10,
+                        opacity=0.7
+                    )
+                ),
+                row=2, col=1
+            )
         
-        # Time series of error
-        fig.add_trace(
-            go.Scatter(
-                x=stress_df['date'],
-                y=stress_df['prediction_error'],
-                mode='lines+markers',
-                name='Error Over Time'
-            ),
-            row=2, col=2
-        )
+        # Time series of error by bank type
+        for bank_type in ['National Systemic Bank', 'Regional Bank', 'Nebraska Bank']:
+            bank_data = stress_df[stress_df['bank_type'] == bank_type]
+            bank_data = bank_data.sort_values('date')
+            fig.add_trace(
+                go.Scatter(
+                    x=bank_data['date'],
+                    y=bank_data['prediction_error'],
+                    mode='lines+markers',
+                    name=bank_type,
+                    line=dict(color=self.color_scheme[bank_type.split()[0].lower()])
+                ),
+                row=2, col=2
+            )
         
         # Update layout
         fig.update_layout(
-            title_text=f"ECL Model Accuracy Analysis During {period_info['name']}",
+            title_text=f"ECL Model Accuracy Analysis During {period_info['name']} by Bank Type",
             showlegend=True,
             **self.layout_defaults
         )
@@ -826,6 +991,7 @@ class ECLDashboard:
         self.app = app
         self.visualizer = ECLVisualizer()
         self.hypothesis_tester = HypothesisTester()
+        self.metrics = ECLMetrics()  # Add this line to initialize metrics
         self.setup_layout()
         self.setup_callbacks()
 
@@ -901,23 +1067,50 @@ class ECLDashboard:
                             dcc.Checklist(
                                 id='bank-type-filter',
                                 options=[
-                                    {'label': ' Commercial Banks', 'value': 'commercial'},
-                                    {'label': ' Consumer Banks', 'value': 'consumer'},
-                                    {'label': ' Investment Banks', 'value': 'investment'}
+                                    {'label': ' National Systemic Banks', 'value': 'national'},
+                                    {'label': ' Regional Banks', 'value': 'regional'},
+                                    {'label': ' Nebraska Banks', 'value': 'nebraska'}
                                 ],
-                                value=['commercial', 'consumer', 'investment']
+                                value=['national', 'regional', 'nebraska']
                             )
                         ])
                     ], className="mb-4"),
 
-                    # Bank List Panel
+                    # Bank List Panel with Modern Styling
                     dbc.Card([
-                        dbc.CardHeader("Banks Used in Analysis"),
+                        dbc.CardHeader([
+                            html.H5("Banks by Category", className="mb-0"),
+                        ]),
                         dbc.CardBody([
-                            dbc.ListGroup(
-                                id='bank-list',
-                                flush=True
-                            )
+                            # National Banks Section
+                            html.Div([
+                                html.H6("National Systemic Banks", 
+                                       className="text-primary mb-2"),
+                                dbc.ListGroup(
+                                    id='national-bank-list',
+                                    flush=True,
+                                    className="mb-3"
+                                )
+                            ]),
+                            # Regional Banks Section
+                            html.Div([
+                                html.H6("Regional Banks", 
+                                       className="text-primary mb-2"),
+                                dbc.ListGroup(
+                                    id='regional-bank-list',
+                                    flush=True,
+                                    className="mb-3"
+                                )
+                            ]),
+                            # Nebraska Banks Section
+                            html.Div([
+                                html.H6("Nebraska Banks", 
+                                       className="text-primary mb-2"),
+                                dbc.ListGroup(
+                                    id='nebraska-bank-list',
+                                    flush=True
+                                )
+                            ])
                         ])
                     ], className="mb-4"),
 
@@ -995,7 +1188,9 @@ class ECLDashboard:
              Output('statistical-results', 'children'),
              Output('supporting-metrics', 'children'),
              Output('hypothesis-description', 'children'),
-             Output('bank-list', 'children')],
+             Output('national-bank-list', 'children'),
+             Output('regional-bank-list', 'children'),
+             Output('nebraska-bank-list','children')],
             [Input('stress-period-selector', 'value'),
              Input('hypothesis-selector', 'value'),
              Input('asset-size-filter', 'value'),
@@ -1055,14 +1250,29 @@ class ECLDashboard:
                 filtered_df, stress_period, hypothesis
             )
 
-            # Generate bank list
-            bank_list_items = [
-                dbc.ListGroupItem(bank) 
-                for bank in sorted(filtered_df['abbreviated_name'].unique())
+            # Generate bank lists by type
+            national_banks = [
+                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
+                                className="py-2") 
+                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'National Systemic Bank']['bank'].unique())
             ]
-            bank_list = bank_list_items if bank_list_items else [dbc.ListGroupItem("No banks available")]
+            national_list = national_banks if national_banks else [dbc.ListGroupItem("No national banks available")]
 
-            return main_fig, stats_panel, supporting_metrics, description, bank_list
+            regional_banks = [
+                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
+                                className="py-2") 
+                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'Regional Bank']['bank'].unique())
+            ]
+            regional_list = regional_banks if regional_banks else [dbc.ListGroupItem("No regional banks available")]
+
+            nebraska_banks = [
+                dbc.ListGroupItem(self.metrics.bank_name_mapping.get(bank, bank), 
+                                className="py-2") 
+                for bank in sorted(filtered_df[filtered_df['bank_type'] == 'Nebraska Bank']['bank'].unique())
+            ]
+            nebraska_list = nebraska_banks if nebraska_banks else [dbc.ListGroupItem("No Nebraska banks available")]
+
+            return main_fig, stats_panel, supporting_metrics, description, national_list, regional_list, nebraska_list
 
         @self.app.callback(
             Output("download-data", "data"),
@@ -1103,20 +1313,13 @@ class ECLDashboard:
         
         # Apply bank type filter
         if bank_types:
-            type_masks = []
-            if 'commercial' in bank_types:
-                type_masks.append(df['consumer_loan_ratio'] <= 50)
-            if 'consumer' in bank_types:
-                type_masks.append(df['consumer_loan_ratio'] > 50)
-            if 'investment' in bank_types:
-                type_masks.append(df['lnci'] / df['lnlsgr'] > 0.5)
-            
-            if type_masks:
-                combined_mask = type_masks[0]
-                for mask in type_masks[1:]:
-                    combined_mask = combined_mask | mask
-                
-                df = df[combined_mask]
+            type_mapping = {
+                'national': 'National Systemic Bank',
+                'regional': 'Regional Bank',
+                'nebraska': 'Nebraska Bank'
+            }
+            selected_types = [type_mapping[t] for t in bank_types if t in type_mapping]
+            df = df[df['bank_type'].isin(selected_types)]
         
         return df
 
@@ -1135,8 +1338,16 @@ class ECLDashboard:
         """Create supporting metrics visualization based on hypothesis"""
         metrics = {}
         
+        # Add bank type breakdown
+        bank_type_counts = df['bank_type'].value_counts()
+        metrics['Bank Type Distribution'] = {
+            'National Systemic Banks': f"{bank_type_counts.get('National Systemic Bank', 0)}",
+            'Regional Banks': f"{bank_type_counts.get('Regional Bank', 0)}",
+            'Nebraska Banks': f"{bank_type_counts.get('Nebraska Bank', 0)}"
+        }
+        
         if hypothesis == 'h1':
-            metrics = {
+            metrics['Analysis Metrics'] = {
                 'Total Banks': len(df['cert'].unique()),
                 'Median CRE Concentration': f"{df['cre_concentration'].median():.1f}%",
                 'Mean ECL Change': f"{df[f'ecl_coverage_change_{period}'].mean():.1f}%",
@@ -1144,13 +1355,13 @@ class ECLDashboard:
             }
         elif hypothesis == 'h2':
             median_consumer_ratio = df['consumer_loan_ratio'].median()
-            metrics = {
+            metrics['Analysis Metrics'] = {
                 'High Consumer Banks': len(df[df['consumer_loan_ratio'] > median_consumer_ratio]['cert'].unique()),
                 'Low Consumer Banks': len(df[df['consumer_loan_ratio'] <= median_consumer_ratio]['cert'].unique()),
                 'Median Consumer Ratio': f"{median_consumer_ratio:.1f}%"
             }
         elif hypothesis == 'h3':
-            metrics = {
+            metrics['Analysis Metrics'] = {
                 'Median Tier 1 Ratio': f"{df['tier1_ratio'].median():.1f}%",
                 'Mean ECL Change': f"{df[f'ecl_coverage_change_{period}'].mean():.1f}%",
                 'Capital-ECL Correlation': f"{df['tier1_ratio'].corr(df[f'ecl_coverage_change_{period}']):.3f}"
@@ -1158,17 +1369,23 @@ class ECLDashboard:
         elif hypothesis == 'h4':
             # Remove invalid values
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['prediction_error'])
-            metrics = {
+            metrics['Analysis Metrics'] = {
                 'Mean Prediction Error': f"{df['prediction_error'].mean():.1f}%",
                 'Median Prediction Error': f"{df['prediction_error'].median():.1f}%",
                 'Error Std Dev': f"{df['prediction_error'].std():.1f}%"
             }
             
-        return html.Div([
-            html.H6("Supporting Metrics"),
-            html.Hr(),
-            *[html.P([html.Strong(f"{k}: "), v]) for k, v in metrics.items()]
-        ])
+        # Create formatted output
+        content = []
+        for section_name, section_metrics in metrics.items():
+            content.extend([
+                html.H6(section_name),
+                html.Hr(),
+                *[html.P([html.Strong(f"{k}: "), v]) for k, v in section_metrics.items()],
+                html.Br()
+            ])
+            
+        return html.Div(content)
 
     def create_stats_panel(self, results: Dict) -> html.Div:
         """Create statistical results panel"""
@@ -1179,6 +1396,8 @@ class ECLDashboard:
             html.H6("Statistical Results"),
             html.Hr()
         ]
+        
+        # Format results by bank type if available
         for key, value in results.items():
             if isinstance(value, dict):
                 content.append(html.P([html.Strong(f"{key}:")]))
@@ -1192,7 +1411,7 @@ class ECLDashboard:
     def prepare_download_data(self, df: pd.DataFrame, stress_period: str, hypothesis: str) -> pd.DataFrame:
         """Prepare DataFrame for download based on current analysis"""
         # Select relevant columns based on hypothesis
-        columns = ['cert', 'date']
+        columns = ['cert', 'date', 'bank_type', 'bank']
         if hypothesis == 'h1':
             columns.extend(['cre_concentration', f'ecl_coverage_change_{stress_period}'])
         elif hypothesis == 'h2':
@@ -1202,33 +1421,75 @@ class ECLDashboard:
         elif hypothesis == 'h4':
             columns.extend(['lnatres', 'predicted_ecl', 'prediction_error'])
         
-        return df[columns]
+        # Map bank names to abbreviated versions
+        download_df = df[columns].copy()
+        download_df['bank'] = download_df['bank'].map(
+            self.metrics.bank_name_mapping
+        ).fillna(download_df['bank'])
+        
+        return download_df
 
 def get_data():
-    # Initialize data extraction and processing
+    """Initialize data extraction and processing"""
     processor = ECLDataProcessor()
+    metrics = ECLMetrics()
 
-    # Define specific banks to analyze
-    bank_list = [
-        {"cert": "3511", "name": "Wells Fargo Bank, National Association", "abbreviated_name": "Wells Fargo"},
-        {"cert": "3510", "name": "Bank of America, National Association", "abbreviated_name": "Bank of America"},
-        {"cert": "7213", "name": "Citibank, National Association", "abbreviated_name": "Citibank"},
-        {"cert": "628", "name": "JPMorgan Chase Bank, National Association", "abbreviated_name": "JPMorgan Chase"},
-        {"cert": "6548", "name": "U.S. Bank National Association", "abbreviated_name": "U.S. Bank"},
-        {"cert": "6384", "name": "PNC Bank, National Association", "abbreviated_name": "PNC Bank"},
-        {"cert": "9846", "name": "Truist Bank", "abbreviated_name": "Truist"},
-        {"cert": "33124", "name": "Goldman Sachs Bank USA", "abbreviated_name": "Goldman Sachs"},
-        {"cert": "32992", "name": "Morgan Stanley Bank, National Association", "abbreviated_name": "Morgan Stanley"},
-        {"cert": "18409", "name": "TD Bank, National Association", "abbreviated_name": "TD Bank"},
-        {"cert": "4297", "name": "Capital One, National Association", "abbreviated_name": "Capital One"},
-        {"cert": "639", "name": "The Bank of New York Mellon", "abbreviated_name": "BNY Mellon"},
-        {"cert": "6672", "name": "Fifth Third Bank, National Association", "abbreviated_name": "Fifth Third Bank"},
-        {"cert": "57957", "name": "Citizens Bank, National Association", "abbreviated_name": "Citizens Bank"},
-        {"cert": "57803", "name": "Ally Bank", "abbreviated_name": "Ally Bank"},
-        {"cert": "17534", "name": "KeyBank National Association", "abbreviated_name": "KeyBank"},
-        {"cert": "5649", "name": "Discover Bank", "abbreviated_name": "Discover Bank"},
-        {"cert": "27314", "name": "Synchrony Bank", "abbreviated_name": "Synchrony Bank"},
-        {"cert": "29950", "name": "Santander Bank, N.A.", "abbreviated_name": "Santander Bank"}
+    # Define bank details including CERT numbers
+    bank_details = [
+        # National Systemic Banks
+        {"cert": "3511", "name": "Wells Fargo Bank, National Association"},
+        {"cert": "3510", "name": "Bank of America, National Association"},
+        {"cert": "7213", "name": "Citibank, National Association"},
+        {"cert": "628", "name": "JPMorgan Chase Bank, National Association"},
+        {"cert": "6548", "name": "U.S. Bank National Association"},
+        {"cert": "6384", "name": "PNC Bank, National Association"},
+        {"cert": "9846", "name": "Truist Bank"},
+        {"cert": "33124", "name": "Goldman Sachs Bank USA"},
+        {"cert": "32992", "name": "Morgan Stanley Bank, National Association"},
+        {"cert": "18409", "name": "TD Bank, National Association"},
+        {"cert": "4297", "name": "Capital One, National Association"},
+        {"cert": "6672", "name": "Fifth Third Bank, National Association"},
+        {"cert": "57957", "name": "Citizens Bank, National Association"},
+        {"cert": "57803", "name": "Ally Bank"},
+        {"cert": "17534", "name": "KeyBank National Association"},
+
+        # Regional Banks
+        {"cert": "5296", "name": "Associated Bank, National Association"},
+        {"cert": "4214", "name": "BOKF, National Association"},
+        {"cert": "58979", "name": "BankUnited, National Association"},
+        {"cert": "20234", "name": "City National Bank of Florida"},
+        {"cert": "34775", "name": "EverBank, National Association"},
+        {"cert": "7888", "name": "First National Bank of Pennsylvania"},
+        {"cert": "3832", "name": "Old National Bank"},
+        {"cert": "26881", "name": "SoFi Bank, National Association"},
+        {"cert": "4988", "name": "Trustmark National Bank"},
+        {"cert": "18221", "name": "Webster Bank, National Association"},
+        {"cert": "33935", "name": "Wintrust Bank, National Association"},
+        {"cert": "2270", "name": "Zions Bancorporation, N.A."},
+        {"cert": "7551", "name": "Fulton Bank, National Association"},
+        {"cert": "33555", "name": "SouthState Bank, National Association"},
+        {"cert": "8273", "name": "UMB Bank, National Association"},
+        {"cert": "9396", "name": "Valley National Bank"},
+        {"cert": "12923", "name": "Bremer Bank, National Association"},
+        {"cert": "639", "name": "The Bank of New York Mellon"},
+
+        # Nebraska Banks
+        {"cert": "10643", "name": "Dundee Bank"},
+        {"cert": "19300", "name": "AMERICAN NATIONAL BANK"},
+        {"cert": "20488", "name": "FIVE POINTS BANK"},
+        {"cert": "5415", "name": "SECURITY FIRST BANK"},
+        {"cert": "19213", "name": "SECURITY NATIONAL BANK OF OMAHA"},
+        {"cert": "15545", "name": "FRONTIER BANK"},
+        {"cert": "19850", "name": "WEST GATE BANK"},
+        {"cert": "34363", "name": "CORE BANK"},
+        {"cert": "13868", "name": "FIRST STATE BANK NEBRASKA"},
+        {"cert": "58727", "name": "ACCESS BANK"},
+        {"cert": "14264", "name": "CORNHUSKER BANK"},
+        {"cert": "33450", "name": "ARBOR BANK"},
+        {"cert": "12241", "name": "WASHINGTON COUNTY BANK"},
+        {"cert": "33380", "name": "ENTERPRISE BANK"},
+        {"cert": "12493", "name": "PREMIER BANK NATIONAL ASSOCIATION"},
+        {"cert": "19742", "name": "FIRST WESTROADS BANK, INC."}
     ]
 
     start_date = '20080101'
@@ -1236,7 +1497,7 @@ def get_data():
 
     # Process data for each bank
     all_data = []
-    for bank in bank_list:
+    for bank in bank_details:
         params = {
             "filters": f"CERT:{bank['cert']} AND REPDTE:[{start_date} TO {end_date}]",
             "fields": (
@@ -1262,12 +1523,15 @@ def get_data():
 
             if 'data' in data:
                 bank_data = [
-                    {**item['data'], 'bank': bank['name'], 'abbreviated_name': bank['abbreviated_name']} 
+                    {**item['data'], 
+                     'bank': bank['name'], 
+                     'abbreviated_name': metrics.bank_name_mapping.get(bank['name'], bank['name'])} 
                     for item in data['data'] 
                     if isinstance(item, dict) and 'data' in item
                 ]
                 all_data.extend(bank_data)
         except Exception as e:
+            print(f"Error processing bank {bank['name']}: {str(e)}")
             continue
 
     if not all_data:
@@ -1286,6 +1550,7 @@ def get_data():
 
     return df
 
+# Disable SSL warning for FDIC API
 warnings.filterwarnings('ignore', message='.*Unverified HTTPS.*')
 
 # Initialize data extraction and processing
@@ -1294,8 +1559,14 @@ processor = ECLDataProcessor()
 # Get processed data
 df = get_data()
 
-# Create Dash app
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+# Create Dash app with modern theme
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+    ]
+)
 server = app.server
 
 # Initialize dashboard
